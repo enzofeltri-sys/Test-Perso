@@ -152,14 +152,10 @@ def run_tick() -> dict:
             if strategies[s].should_enter(rows[s]):
                 mom_series = dfs[s]["close"].pct_change(momentum_lookback)
                 mom = mom_series.iloc[-1] if len(mom_series) else 0.0
-                # should_enter() vient de mettre à jour l'état interne de
-                # la stratégie -> on le lit tout de suite et on le fige
-                # dans le tuple candidat (jamais relu plus tard).
-                active = strategies[s].active_regime
-                candidates.append((s, 0.0 if pd.isna(mom) else mom, active))
+                candidates.append((s, 0.0 if pd.isna(mom) else mom))
         candidates.sort(key=lambda item: item[1], reverse=True)
 
-        for s, _, active in candidates:
+        for s, _ in candidates:
             if max_concurrent and open_count >= max_concurrent:
                 break
 
@@ -183,8 +179,13 @@ def run_tick() -> dict:
 
             row = rows[s]
             price = row["close"]
-            sub_strategy = strategies[s].trend_strategy if active == "trend" else strategies[s].range_strategy
-            stop_p, target_p, stop_distance = sub_strategy.compute_stop_and_target(price, row)
+            # compute_stop_and_target() sur le wrapper RegimeSwitchingStrategy
+            # confirme le régime actif (should_enter() ne fait que le PROPOSER,
+            # voir strategy.py) -> on le lit juste après pour le figer dans la
+            # position, puisque l'état interne de la stratégie n'est pas
+            # reconduit d'un tick à l'autre (processus stateless, voir plus haut).
+            stop_p, target_p, stop_distance = strategies[s].compute_stop_and_target(price, row)
+            active = strategies[s].active_regime
             equity_now = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
             available_cash = cash / (1 + fee_pct)
             qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], price, stop_distance, available_cash)
