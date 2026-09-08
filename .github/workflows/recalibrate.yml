@@ -13,7 +13,12 @@ name: Recalibrage mensuel du bot de trading
 on:
   schedule:
     - cron: "0 3 1 * *"   # le 1er de chaque mois à 3h UTC
-  workflow_dispatch: {}    # déclenchement manuel depuis l'onglet Actions, pour tester
+  workflow_dispatch:       # déclenchement manuel depuis l'onglet Actions, pour tester
+    inputs:
+      dry_run:
+        description: "Calculer et afficher le diagnostic, sans rien écrire dans Supabase"
+        type: boolean
+        default: false
 
 jobs:
   recalibrate:
@@ -35,4 +40,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python recalibrate.py
+        run: python recalibrate.py ${{ inputs.dry_run == true && '--dry-run' || '' }}

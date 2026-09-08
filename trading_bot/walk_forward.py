@@ -150,6 +150,13 @@ def walk_forward_analysis(market_data: dict, base_strategy_cfg: dict, param_grid
             "test_max_drawdown_pct": test_res["max_drawdown_pct"],
             "test_num_trades": test_res["num_trades"],
             "test_win_rate_pct": test_res["win_rate_pct"],
+            # diagnostic : POURQUOI une fenêtre gagne ou perd — sans ça on ne
+            # peut pas distinguer "mauvais marché" de "stratégie structurellement
+            # mauvaise", ni voir quelles sorties (stop/objectif/signal) coûtent
+            "test_buy_and_hold_return_pct": test_res["buy_and_hold_return_pct"],
+            "test_profit_factor": test_res["profit_factor"],
+            "test_exit_reasons": test_res["exit_reasons"],
+            "test_per_symbol": test_res["per_symbol"],
         })
 
         window_start += step_delta
@@ -162,15 +169,79 @@ def aggregate_walk_forward(windows: list) -> dict:
         return {"num_windows": 0}
 
     compounded = 1.0
+    compounded_bh = 1.0
+    exit_reasons = {}
     for w in windows:
         compounded *= (1 + w["test_return_pct"] / 100)
+        compounded_bh *= (1 + w.get("test_buy_and_hold_return_pct", 0.0) / 100)
+        for reason, count in (w.get("test_exit_reasons") or {}).items():
+            exit_reasons[reason] = exit_reasons.get(reason, 0) + count
+
+    total_trades = sum(w["test_num_trades"] for w in windows)
+    # taux de gain global pondéré par le nombre de trades, pas la moyenne des
+    # taux par fenêtre (une fenêtre à 1 trade gagnant pèserait autant qu'une à 30)
+    weighted_wins = sum(w["test_win_rate_pct"] / 100 * w["test_num_trades"] for w in windows)
 
     return {
         "num_windows": len(windows),
         "compounded_oos_return_pct": (compounded - 1) * 100,
+        "compounded_buy_and_hold_pct": (compounded_bh - 1) * 100,
         "avg_oos_sharpe": float(np.mean([w["test_sharpe"] for w in windows])),
         "avg_oos_max_drawdown_pct": float(np.mean([w["test_max_drawdown_pct"] for w in windows])),
         "worst_oos_max_drawdown_pct": float(np.min([w["test_max_drawdown_pct"] for w in windows])),
         "pct_windows_positive": sum(1 for w in windows if w["test_return_pct"] > 0) / len(windows) * 100,
-        "total_oos_trades": sum(w["test_num_trades"] for w in windows),
+        "total_oos_trades": total_trades,
+        "overall_win_rate_pct": (weighted_wins / total_trades * 100) if total_trades else 0.0,
+        "exit_reasons": exit_reasons,
     }
+
+
+def _json_number(value):
+    """float/np.float -> float JSON-valide (inf/nan -> None) — un profit
+    factor infini (aucune perte) casserait sinon l'écriture jsonb."""
+    if value is None:
+        return None
+    value = float(value)
+    return value if np.isfinite(value) else None
+
+
+def summarize_windows(windows: list) -> list:
+    """Version compacte et sérialisable en JSON des fenêtres, pour le
+    journal partagé et la sortie console — pas pour recalculer quoi que
+    ce soit (les Timestamps deviennent des dates ISO)."""
+    out = []
+    for w in windows:
+        out.append({
+            "test_start": str(w["test_start"])[:10],
+            "test_end": str(w["test_end"])[:10],
+            "chosen_params": w["chosen_params"],
+            "return_pct": round(float(w["test_return_pct"]), 2),
+            "buy_and_hold_pct": round(float(w.get("test_buy_and_hold_return_pct", 0.0)), 2),
+            "num_trades": int(w["test_num_trades"]),
+            "win_rate_pct": round(float(w["test_win_rate_pct"]), 1),
+            "profit_factor": _json_number(w.get("test_profit_factor")),
+            "max_drawdown_pct": round(float(w["test_max_drawdown_pct"]), 2),
+            "exit_reasons": dict(w.get("test_exit_reasons") or {}),
+            "per_symbol_pnl": {
+                s: round(float(v["pnl"]), 2) for s, v in (w.get("test_per_symbol") or {}).items()
+            },
+        })
+    return out
+
+
+def print_windows(windows: list) -> None:
+    """Détail lisible fenêtre par fenêtre — c'est ce qui permet de voir si
+    une stratégie perd partout (structurel) ou seulement sur une période
+    (marché), et si ce sont les stops, les objectifs ou les sorties sur
+    signal qui font le résultat."""
+    for i, w in enumerate(summarize_windows(windows), start=1):
+        pf = "inf" if w["profit_factor"] is None else f"{w['profit_factor']:.2f}"
+        reasons = ", ".join(f"{k}={v}" for k, v in sorted(w["exit_reasons"].items())) or "aucun trade"
+        per_sym = ", ".join(f"{s}={v:+.2f}" for s, v in w["per_symbol_pnl"].items())
+        print(f"  [{i:>2}] {w['test_start']} -> {w['test_end']}  "
+              f"rendement {w['return_pct']:+7.2f}%  (buy&hold {w['buy_and_hold_pct']:+7.2f}%)  "
+              f"trades={w['num_trades']:>3}  gain={w['win_rate_pct']:5.1f}%  PF={pf}  "
+              f"DD={w['max_drawdown_pct']:.2f}%")
+        print(f"        params={w['chosen_params']}  sorties: {reasons}")
+        if per_sym:
+            print(f"        par paire: {per_sym}")

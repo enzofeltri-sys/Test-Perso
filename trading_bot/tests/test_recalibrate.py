@@ -6,6 +6,7 @@ l'orchestration (run), et vérifient que run() n'écrit dans Supabase que
 quand evaluate_robustness dit oui.
 """
 
+import json
 import sys
 
 import pytest
@@ -110,6 +111,8 @@ def test_run_writes_strategy_overrides_when_robust(monkeypatch, portfolio_data):
     assert fake_db.journal[0]["author"] == "bot"
     assert "appliqué" in fake_db.journal[0]["message"]
     assert fake_db.journal[0]["data"]["applied"] is True
+    assert len(fake_db.journal[0]["data"]["windows"]) == 3
+    json.dumps(fake_db.journal[0]["data"])
 
 
 def test_run_writes_nothing_when_not_robust(monkeypatch, portfolio_data):
@@ -129,6 +132,13 @@ def test_run_writes_nothing_when_not_robust(monkeypatch, portfolio_data):
     assert len(fake_db.journal) == 1
     assert fake_db.journal[0]["author"] == "bot"
     assert "pas assez robuste" in fake_db.journal[0]["message"].lower()
+    # le manager doit voir le diagnostic (fenêtre par fenêtre), pas que le verdict
+    journal_data = fake_db.journal[0]["data"]
+    assert len(journal_data["windows"]) == 3
+    assert journal_data["windows"][0]["return_pct"] == -3.0
+    assert "exit_reasons" in journal_data and "overall_win_rate_pct" in journal_data
+    json.dumps(journal_data)  # tout ce qui part vers jsonb doit être sérialisable
+    assert result["windows"] == journal_data["windows"]
 
 
 def test_run_dry_run_never_writes_even_when_robust(monkeypatch, portfolio_data):

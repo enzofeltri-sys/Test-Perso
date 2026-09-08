@@ -45,7 +45,8 @@ import yaml
 import data
 import supabase_state as db
 from main import _fetch_portfolio_history
-from walk_forward import walk_forward_analysis, aggregate_walk_forward, _apply_overrides
+from walk_forward import (walk_forward_analysis, aggregate_walk_forward, _apply_overrides,
+                          summarize_windows, print_windows)
 from strategy import regime_strategy_from_config
 
 # Nombre de fenêtres hors-échantillon les plus RÉCENTES examinées pour la
@@ -143,7 +144,15 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
             )
         return {"applied": False, "reason": reason}
 
-    print(f"{len(windows)} fenêtre(s) hors-échantillon au total.")
+    print(f"{len(windows)} fenêtre(s) hors-échantillon au total :")
+    # détail fenêtre par fenêtre — c'est le diagnostic qui explique un
+    # verdict, pas seulement le verdict (voir print_windows)
+    print_windows(windows)
+    agg_all = aggregate_walk_forward(windows)
+    print(f"  Sur toutes les fenêtres : rendement composé {agg_all['compounded_oos_return_pct']:+.2f}% "
+          f"(buy&hold {agg_all['compounded_buy_and_hold_pct']:+.2f}%), "
+          f"taux de gain global {agg_all['overall_win_rate_pct']:.1f}%, "
+          f"sorties {agg_all['exit_reasons']}")
     verdict = evaluate_robustness(windows)
     if verdict.get("compounded_oos_return_pct") is not None:
         print(f"  {len(verdict['recent_windows'])} fenêtres récentes examinées : "
@@ -153,6 +162,18 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
     # "recent_windows" contient des Timestamps pandas, pas sérialisables tels
     # quels en JSON — jamais inclus dans ce qui part vers le journal/Supabase.
     verdict_summary = {k: v for k, v in verdict.items() if k != "recent_windows"}
+    # ...mais leur version compacte (dates ISO, nombres JSON-valides) part
+    # dans le journal : le manager doit pouvoir lire POURQUOI le bot a
+    # conclu ce qu'il a conclu, pas juste le verdict
+    windows_summary = summarize_windows(windows)
+    diagnostic = {
+        "num_windows": len(windows),
+        "windows": windows_summary,
+        "all_windows_compounded_return_pct": round(agg_all["compounded_oos_return_pct"], 2),
+        "all_windows_buy_and_hold_pct": round(agg_all["compounded_buy_and_hold_pct"], 2),
+        "overall_win_rate_pct": round(agg_all["overall_win_rate_pct"], 1),
+        "exit_reasons": agg_all["exit_reasons"],
+    }
 
     if not verdict["robust"]:
         print(f"Pas assez robuste pour recalibrer : {verdict['reason']} — aucun changement écrit.")
@@ -163,9 +184,9 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
                 f"{len(windows)} fenêtres walk-forward au total, "
                 f"{len(verdict['recent_windows'])} récentes examinées. Aucun changement — "
                 "le bot continue avec les derniers paramètres en place.",
-                data={"applied": False, "num_windows": len(windows), **verdict_summary},
+                data={"applied": False, **diagnostic, **verdict_summary},
             )
-        return {"applied": False, "reason": verdict["reason"]}
+        return {"applied": False, "reason": verdict["reason"], "windows": windows_summary}
 
     candidate_params = windows[-1]["chosen_params"]
     print(f"Robuste — nouveaux paramètres candidats (fenêtre la plus récente) : {candidate_params}")
@@ -179,7 +200,8 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
 
     if dry_run:
         print("--dry-run : rien n'est écrit dans Supabase.")
-        return {**verdict, "applied": False, "reason": "dry-run", "candidate_params": candidate_params}
+        return {**verdict, "applied": False, "reason": "dry-run", "candidate_params": candidate_params,
+                "windows": windows_summary}
 
     note = (f"recalibrage auto — rendement OOS composé récent "
             f"{verdict['compounded_oos_return_pct']:.2f}% sur {len(verdict['recent_windows'])} fenêtres")
@@ -191,9 +213,9 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
         f"{len(verdict['recent_windows'])} fenêtres récentes robustes (rendement composé "
         f"{verdict['compounded_oos_return_pct']:.2f}%, {verdict['pct_windows_positive']:.0f}% positives). "
         "Écrit dans tradingbot_config.strategy_overrides.",
-        data={"applied": True, "candidate_params": candidate_params, "num_windows": len(windows), **verdict_summary},
+        data={"applied": True, "candidate_params": candidate_params, **diagnostic, **verdict_summary},
     )
-    return {**verdict, "applied": True, "candidate_params": candidate_params}
+    return {**verdict, "applied": True, "candidate_params": candidate_params, "windows": windows_summary}
 
 
 def main():

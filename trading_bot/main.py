@@ -18,7 +18,7 @@ import data
 from strategy import regime_strategy_from_config
 from portfolio_backtester import PortfolioBacktester
 from paper_trader import PortfolioPaperTrader
-from walk_forward import walk_forward_analysis, aggregate_walk_forward
+from walk_forward import walk_forward_analysis, aggregate_walk_forward, print_windows
 from monte_carlo import bootstrap_trade_returns, plot_distribution
 
 
@@ -147,13 +147,19 @@ def cmd_validate(cfg: dict):
     if agg.get("num_windows", 0) == 0:
         print("  Pas assez d'historique pour au moins une fenêtre train/test complète.")
     else:
+        print("  Détail par fenêtre (test hors-échantillon) :")
+        print_windows(windows)
+        print()
         print(f"  Fenêtres testées            : {agg['num_windows']}")
         print(f"  Rendement OOS composé       : {agg['compounded_oos_return_pct']:.2f} %")
+        print(f"  Buy & hold sur ces fenêtres : {agg['compounded_buy_and_hold_pct']:.2f} %")
         print(f"  Sharpe OOS moyen            : {agg['avg_oos_sharpe']:.2f}")
         print(f"  Drawdown OOS moyen          : {agg['avg_oos_max_drawdown_pct']:.2f} %")
         print(f"  Pire drawdown OOS observé   : {agg['worst_oos_max_drawdown_pct']:.2f} %")
         print(f"  % de fenêtres positives     : {agg['pct_windows_positive']:.1f} %")
         print(f"  Trades hors-échantillon     : {agg['total_oos_trades']}")
+        print(f"  Taux de gain global OOS     : {agg['overall_win_rate_pct']:.1f} %")
+        print(f"  Sorties par raison (OOS)    : {agg['exit_reasons']}")
     print()
 
     print("===== Backtest portefeuille + analyse Monte Carlo =====")
