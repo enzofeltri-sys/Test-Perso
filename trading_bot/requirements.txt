@@ -1,0 +1,11 @@
+ccxt>=4.5.0
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+PyYAML>=6.0
+
+# Nécessaires uniquement pour web_app.py (déploiement Render + UptimeRobot
+# + Supabase) — pas requis pour backtest/validate/paper en local.
+flask>=3.0.0
+gunicorn>=21.2.0
+requests>=2.31.0

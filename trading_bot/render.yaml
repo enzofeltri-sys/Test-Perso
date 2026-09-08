@@ -1,0 +1,29 @@
+# Blueprint Render pour déployer web_app.py en Web Service GRATUIT.
+#
+# Ce service ne fait qu'exposer /tick (déclenche un cycle de trading
+# virtuel) et / (vérification de santé) — voir web_app.py. Il ne
+# fonctionne correctement qu'accompagné de :
+#   1. Un projet Supabase avec les tables tradingbot_state /
+#      tradingbot_trades / tradingbot_errors (déjà créées si tu utilises
+#      le projet Supabase connecté à cette conversation).
+#   2. Un moniteur UptimeRobot qui ping /tick toutes les 5 minutes (voir
+#      DEPLOIEMENT.md) — sans lui, le service s'endort après 15 minutes
+#      d'inactivité et le bot ne tourne plus.
+#
+# Déploiement : sur render.com -> New -> Blueprint -> connecter le repo
+# GitHub contenant ce dossier. Render détecte ce fichier automatiquement.
+
+services:
+  - type: web
+    name: trading-bot-paper
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 60
+    envVars:
+      - key: SUPABASE_URL
+        sync: false   # à renseigner manuellement dans le dashboard Render
+      - key: SUPABASE_KEY
+        sync: false   # à renseigner manuellement dans le dashboard Render (clé "anon")
+      - key: PYTHON_VERSION
+        value: "3.11.9"
