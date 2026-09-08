@@ -1,0 +1,45 @@
+name: Exporter l'historique OHLCV (branche history-cache)
+
+# Télécharge l'historique réel du portefeuille (même source et même
+# profondeur que recalibrate.py) et le publie en CSV sur la branche
+# `history-cache`, pour pouvoir rejouer le walk-forward et tester des
+# variantes de stratégie localement, sur les vraies données, sans accès
+# réseau aux exchanges. Voir trading_bot/export_history.py.
+#
+# La branche est réécrite à chaque export (orphan + force push) : elle ne
+# contient JAMAIS de code, uniquement des données, et n'est pas destinée à
+# être fusionnée.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        working-directory: trading_bot
+        run: pip install -r requirements.txt
+
+      - name: Exporter
+        working-directory: trading_bot
+        run: python export_history.py --out history
+
+      - name: Publier sur la branche history-cache
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan history-cache
+          git rm -rf --cached . -q
+          git add -f trading_bot/history/*.csv
+          git commit -q -m "Historique OHLCV exporté le $(date -u +%F) (voir export-history.yml)"
+          git push -f origin history-cache

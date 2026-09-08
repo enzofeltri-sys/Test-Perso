@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 logs/*.csv
+history/       # export local de l'historique OHLCV (export_history.py) — jamais sur main
 *.png
 .env
 .pytest_cache/
