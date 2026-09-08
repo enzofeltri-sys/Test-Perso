@@ -15,6 +15,7 @@ RegimeSwitchingStrategy.compute_stop_and_target() doit être appelé sur le
 wrapper, pas sur une sous-stratégie choisie à la main AVANT confirmation).
 """
 
+import pytest
 import yaml
 
 import web_app
@@ -105,6 +106,49 @@ def test_run_tick_never_leaves_a_position_with_unresolved_substrategy(monkeypatc
 
     assert any_position_opened, "aucune position ouverte sur 60 ticks : le test ne couvre rien, ajuster les seeds/n"
     assert not fake_db.errors
+
+
+def test_run_tick_applies_slippage_to_fills(monkeypatch):
+    """Le paper trading doit se comporter comme si c'était de l'argent réel :
+    portfolio_backtester.py simule un glissement de prix à chaque exécution
+    (slippage_pct, voir config.yaml) — run_tick() doit faire pareil, sinon
+    le bot déployé obtient des remplissages parfaits qu'aucune exécution
+    réelle n'obtiendrait, et les résultats affichés sont trop optimistes."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    slippage_pct = cfg["backtest"]["slippage_pct"]
+    assert slippage_pct > 0, "slippage_pct doit être > 0 dans config.yaml pour que ce test prouve quelque chose"
+
+    histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
+    clock = Clock(idx=250)
+    fake_db = FakeDB()
+
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    checked_at_least_one_fill = False
+    seen = 0
+    for _ in range(60):
+        clock.idx += 5
+        web_app.run_tick()
+        for t in fake_db.trades[seen:]:
+            raw_close = float(histories[t["symbol"]]["close"].iloc[clock.idx])
+            if t["side"] == "buy":
+                expected = raw_close * (1 + slippage_pct)
+            elif t["reason"] == "signal":
+                expected = raw_close * (1 - slippage_pct)
+            else:
+                continue  # stop_loss/take_profit : le prix de référence n'est pas le close brut
+            assert t["price"] == pytest.approx(expected, rel=1e-9), (
+                f"{t['symbol']} {t['side']} ({t['reason']}) : {t['price']} != {expected} attendu "
+                "avec le glissement appliqué"
+            )
+            checked_at_least_one_fill = True
+        seen = len(fake_db.trades)
+
+    assert checked_at_least_one_fill, "aucun trade au close exact à vérifier sur 60 ticks — ajuster seeds/n"
 
 
 def test_apply_config_overrides_defaults_to_config_yaml_when_no_override():

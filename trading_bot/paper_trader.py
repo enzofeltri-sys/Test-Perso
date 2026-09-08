@@ -26,13 +26,15 @@ class PortfolioPaperTrader:
                  fee_pct: float, risk_per_trade_pct: float, max_daily_loss_pct: float = None,
                  max_concurrent_positions: int = None, lookback: int = 200,
                  max_correlation_for_new_position: float = None, correlation_lookback: int = 30,
-                 momentum_lookback: int = 20, max_total_drawdown_pct: float = None):
+                 momentum_lookback: int = 20, max_total_drawdown_pct: float = None,
+                 slippage_pct: float = 0.0):
         self.exchange = data.get_exchange(exchange_id)
         self.symbols = symbols
         self.timeframe = timeframe
         self.strategies = {s: strategy_factory() for s in symbols}
         self.poll_interval_seconds = poll_interval_seconds
         self.fee_pct = fee_pct
+        self.slippage_pct = slippage_pct
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_concurrent_positions = max_concurrent_positions
         self.max_correlation_for_new_position = max_correlation_for_new_position
@@ -105,6 +107,7 @@ class PortfolioPaperTrader:
                 exit_price, exit_reason = row["close"], "signal"
 
             if exit_price is not None:
+                exit_price *= (1 - self.slippage_pct)  # on suppose une exécution légèrement défavorable
                 proceeds = pos["qty"] * exit_price
                 fee = proceeds * self.fee_pct
                 self.cash += proceeds - fee
@@ -158,22 +161,22 @@ class PortfolioPaperTrader:
                 equity_now = self.cash + sum(
                     self.positions[s2]["qty"] * prices[s2] for s2 in rows if self.positions.get(s2) is not None
                 )
-                price = row["close"]
-                stop_p, target_p, stop_distance = self.strategies[s].compute_stop_and_target(price, row)
+                fill_price = row["close"] * (1 + self.slippage_pct)  # exécution légèrement défavorable
+                stop_p, target_p, stop_distance = self.strategies[s].compute_stop_and_target(fill_price, row)
                 available_cash = self.cash / (1 + self.fee_pct)
-                qty = position_size(equity_now, self.risk_per_trade_pct, price, stop_distance, available_cash)
+                qty = position_size(equity_now, self.risk_per_trade_pct, fill_price, stop_distance, available_cash)
 
                 if qty > 0:
-                    cost = qty * price
+                    cost = qty * fill_price
                     fee = cost * self.fee_pct
                     self.cash -= (cost + fee)
-                    self.positions[s] = {"qty": qty, "entry_price": price, "stop_price": stop_p, "target_price": target_p}
+                    self.positions[s] = {"qty": qty, "entry_price": fill_price, "stop_price": stop_p, "target_price": target_p}
                     open_count += 1
                     equity_after = self.cash + sum(
                         self.positions[s2]["qty"] * prices[s2] for s2 in rows if self.positions.get(s2) is not None
                     )
-                    self._log_trade(s, "buy", price, qty, "signal", equity_after)
-                    print(f"[{datetime.now()}] ACHAT  {s}  {qty:.6f} @ {price:.2f} "
+                    self._log_trade(s, "buy", fill_price, qty, "signal", equity_after)
+                    print(f"[{datetime.now()}] ACHAT  {s}  {qty:.6f} @ {fill_price:.2f} "
                           f"(stop={stop_p:.2f}, target={target_p:.2f})")
         elif not dd_ok:
             print(f"[{datetime.now()}] coupe-circuit de DRAWDOWN TOTAL actif — le bot n'ouvrira plus "

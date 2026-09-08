@@ -180,6 +180,7 @@ def cmd_paper(cfg: dict, run_once: bool):
         poll_interval_seconds=pt_cfg["poll_interval_seconds"],
         log_file=pt_cfg["log_file"],
         fee_pct=cfg["backtest"].get("fee_pct", 0.001),
+        slippage_pct=cfg["backtest"].get("slippage_pct", 0.0),
         risk_per_trade_pct=risk_cfg["risk_per_trade_pct"],
         max_daily_loss_pct=risk_cfg.get("max_daily_loss_pct"),
         max_concurrent_positions=pf_cfg.get("max_concurrent_positions"),

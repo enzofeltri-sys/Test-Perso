@@ -214,6 +214,7 @@ def run_tick() -> dict:
     pt_cfg = cfg["paper_trading"]
     ex_cfg = cfg["exchange"]
     fee_pct = cfg["backtest"].get("fee_pct", 0.001)
+    slippage_pct = cfg["backtest"].get("slippage_pct", 0.0)
 
     overrides = db.load_config_overrides()
     active_symbols = _apply_config_overrides(risk_cfg, pf_cfg, overrides)
@@ -287,6 +288,7 @@ def run_tick() -> dict:
             exit_price, exit_reason = row["close"], "signal"
 
         if exit_price is not None:
+            exit_price *= (1 - slippage_pct)  # on suppose une exécution légèrement défavorable
             proceeds = pos["qty"] * exit_price
             fee = proceeds * fee_pct
             cash += proceeds - fee
@@ -342,30 +344,30 @@ def run_tick() -> dict:
                     continue
 
             row = rows[s]
-            price = row["close"]
+            fill_price = row["close"] * (1 + slippage_pct)  # exécution légèrement défavorable
             # compute_stop_and_target() sur le wrapper RegimeSwitchingStrategy
             # confirme le régime actif (should_enter() ne fait que le PROPOSER,
             # voir strategy.py) -> on le lit juste après pour le figer dans la
             # position, puisque l'état interne de la stratégie n'est pas
             # reconduit d'un tick à l'autre (processus stateless, voir plus haut).
-            stop_p, target_p, stop_distance = strategies[s].compute_stop_and_target(price, row)
+            stop_p, target_p, stop_distance = strategies[s].compute_stop_and_target(fill_price, row)
             active = strategies[s].active_regime
             equity_now = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
             available_cash = cash / (1 + fee_pct)
-            qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], price, stop_distance, available_cash)
+            qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], fill_price, stop_distance, available_cash)
 
             if qty > 0:
-                cost = qty * price
+                cost = qty * fill_price
                 fee = cost * fee_pct
                 cash -= (cost + fee)
                 positions[s] = {
-                    "qty": qty, "entry_price": price, "stop_price": stop_p,
+                    "qty": qty, "entry_price": fill_price, "stop_price": stop_p,
                     "target_price": target_p, "active_substrategy": active,
                 }
                 open_count += 1
                 equity_after = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
-                db.log_trade(s, "buy", price, qty, "signal", cash, equity_after)
-                trades_this_tick.append({"symbol": s, "side": "buy", "price": price, "reason": "signal"})
+                db.log_trade(s, "buy", fill_price, qty, "signal", cash, equity_after)
+                trades_this_tick.append({"symbol": s, "side": "buy", "price": fill_price, "reason": "signal"})
 
     total_equity = cash + sum(positions[s]["qty"] * prices[s] for s in rows if positions.get(s))
 
