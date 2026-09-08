@@ -100,7 +100,21 @@ STATUS_PAGE = """<!doctype html>
   .empty{ font-size:0.85rem; color:var(--text-faint); }
   footer{ padding-top:30px; border-top:1px solid var(--rule); font-size:0.82rem; color:var(--text-muted); }
   footer a{ color:var(--accent); }
+
+  #pull-indicator{
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    display:flex; align-items:center; justify-content:center;
+    height:52px; margin-top:-52px;
+    font-family:"IBM Plex Mono", monospace; font-size:0.72rem;
+    letter-spacing:0.08em; text-transform:uppercase; color:var(--text-muted);
+    transition:transform 0.15s ease-out;
+    pointer-events:none;
+  }
+  #pull-indicator.armed{ color:var(--accent); }
+  @media (prefers-reduced-motion: reduce){ #pull-indicator{ transition:none; } }
 </style>
+
+<div id="pull-indicator">tirer pour rafraîchir</div>
 
 <div class="wrap">
   <header>
@@ -172,9 +186,52 @@ STATUS_PAGE = """<!doctype html>
   {% endif %}
 
   <footer>
-    <p>Rafraîchit à chaque chargement · <a href="/tick">/tick</a> déclenche un cycle manuellement (UptimeRobot le fait déjà toutes les 5 min).</p>
+    <p>Tire vers le bas en haut de la page pour rafraîchir · <a href="/tick">/tick</a> déclenche un cycle manuellement (UptimeRobot le fait déjà toutes les 5 min).</p>
   </footer>
 </div>
+
+<script>
+(function () {
+  // "Tirer pour rafraîchir" en JS : nécessaire dès que la page est ouverte
+  // en PWA/écran d'accueil (pas de barre de navigateur pour tirer dessus),
+  // et fonctionne aussi dans un onglet de navigateur classique.
+  var indicator = document.getElementById("pull-indicator");
+  var THRESHOLD = 70;
+  var startY = null;
+  var pulling = false;
+
+  document.addEventListener("touchstart", function (e) {
+    if (window.scrollY <= 0) {
+      startY = e.touches[0].clientY;
+      pulling = true;
+    }
+  }, { passive: true });
+
+  document.addEventListener("touchmove", function (e) {
+    if (!pulling || startY === null) return;
+    var dy = e.touches[0].clientY - startY;
+    if (dy <= 0) { indicator.style.transform = ""; indicator.classList.remove("armed"); return; }
+    var pull = Math.min(dy, THRESHOLD * 1.6);
+    indicator.style.transform = "translateY(" + pull + "px)";
+    indicator.textContent = dy > THRESHOLD ? "relâcher pour rafraîchir" : "tirer pour rafraîchir";
+    indicator.classList.toggle("armed", dy > THRESHOLD);
+  }, { passive: true });
+
+  document.addEventListener("touchend", function (e) {
+    if (!pulling || startY === null) return;
+    var dy = (e.changedTouches[0].clientY - startY);
+    pulling = false;
+    startY = null;
+    if (dy > THRESHOLD) {
+      indicator.textContent = "actualisation…";
+      window.location.reload();
+    } else {
+      indicator.style.transform = "";
+      indicator.classList.remove("armed");
+    }
+  });
+})();
+</script>
 """
 
 
