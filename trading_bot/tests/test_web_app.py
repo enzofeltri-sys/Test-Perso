@@ -199,6 +199,76 @@ def test_run_tick_rejects_entries_below_exchange_min_order(monkeypatch):
     assert not fake_db.trades, "aucun ordre ne devrait jamais passer sous le minimum de l'exchange"
 
 
+def test_run_tick_applies_strategy_overrides_before_constructing_strategies(monkeypatch):
+    """recalibrate.py écrit les paramètres gagnants dans
+    tradingbot_config.strategy_overrides — run_tick() doit les appliquer
+    par-dessus config.yaml AVANT de construire les RegimeSwitchingStrategy,
+    pas après (sinon la recalibration n'a aucun effet)."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    original_min_score = cfg["strategy"]["trend"]["min_score_to_enter"]
+    original_adx = cfg["strategy"]["regime"]["adx_trend_threshold"]
+
+    strategy_overrides = {"trend.min_score_to_enter": original_min_score + 1,
+                           "regime.adx_trend_threshold": original_adx + 15}
+
+    histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
+    clock = Clock(idx=250)
+    fake_db = FakeDB(overrides={"strategy_overrides": strategy_overrides})
+
+    seen_cfgs = []
+    real_factory = web_app.regime_strategy_from_config
+
+    def _spy_factory(strategy_cfg):
+        seen_cfgs.append(strategy_cfg)
+        return real_factory(strategy_cfg)
+
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app, "db", fake_db)
+    monkeypatch.setattr(web_app, "regime_strategy_from_config", _spy_factory)
+
+    clock.idx += 5
+    result = web_app.run_tick()
+
+    assert seen_cfgs, "regime_strategy_from_config n'a jamais été appelé"
+    for strat_cfg in seen_cfgs:
+        assert strat_cfg["trend"]["min_score_to_enter"] == original_min_score + 1
+        assert strat_cfg["regime"]["adx_trend_threshold"] == original_adx + 15
+    assert result["active_strategy_overrides"] == strategy_overrides
+    assert result["config_overrides_active"] is True
+
+
+def test_run_tick_uses_config_yaml_strategy_when_no_strategy_overrides(monkeypatch):
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+
+    histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
+    clock = Clock(idx=250)
+    fake_db = FakeDB()  # pas d'overrides
+
+    seen_cfgs = []
+    real_factory = web_app.regime_strategy_from_config
+
+    def _spy_factory(strategy_cfg):
+        seen_cfgs.append(strategy_cfg)
+        return real_factory(strategy_cfg)
+
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app, "db", fake_db)
+    monkeypatch.setattr(web_app, "regime_strategy_from_config", _spy_factory)
+
+    clock.idx += 5
+    result = web_app.run_tick()
+
+    for strat_cfg in seen_cfgs:
+        assert strat_cfg["trend"]["min_score_to_enter"] == cfg["strategy"]["trend"]["min_score_to_enter"]
+    assert result["active_strategy_overrides"] == {}
+
+
 def test_apply_config_overrides_defaults_to_config_yaml_when_no_override():
     risk_cfg = {"risk_per_trade_pct": 0.01, "max_daily_loss_pct": 0.03}
     pf_cfg = {"symbols": ["BTC/USDT", "ETH/USDT"], "max_concurrent_positions": 2}

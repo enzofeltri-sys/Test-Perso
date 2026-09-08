@@ -23,6 +23,12 @@ Aucun de ces trois services ne coûte quoi que ce soit à ce niveau
 d'usage. Aucun ordre réel n'est jamais envoyé, ici comme ailleurs dans
 ce projet.
 
+Un quatrième composant optionnel, `recalibrate.py` (section 3ter),
+revalide la stratégie une fois par mois sur l'historique réel et ajuste
+ses paramètres si la validation est robuste — un Cron Job Render séparé,
+pas nécessairement gratuit contrairement aux trois premiers (voir cette
+section pour le détail du coût).
+
 ## 1. Les tables Supabase
 
 Si tu utilises le projet Supabase déjà connecté à cette conversation,
@@ -75,6 +81,7 @@ create table if not exists public.tradingbot_config (
   momentum_lookback int,
   max_concurrent_positions int,
   active_symbols jsonb,
+  strategy_overrides jsonb,
   note text,
   updated_by text,
   updated_at timestamptz not null default now()
@@ -180,6 +187,59 @@ Chaque réponse de `/tick` indique `"config_overrides_active"` et
 est bien prise en compte. Si la table n'existe pas encore (déploiement
 sans cette étape optionnelle), le bot tourne normalement avec les
 valeurs de `config.yaml` — aucune erreur.
+
+⚠️ **Migration si `tradingbot_config` existe déjà** (déployée avant
+l'ajout de `recalibrate.py`, voir section 3ter) : la colonne
+`strategy_overrides` n'y est pas encore. Ajoute-la une fois, dans le SQL
+Editor de Supabase :
+
+```sql
+alter table public.tradingbot_config
+  add column if not exists strategy_overrides jsonb;
+```
+
+## 3ter. Recalibrage mensuel automatique — `recalibrate.py`
+
+Un second script, indépendant de `web_app.py`, revalide périodiquement
+la stratégie sur l'historique réel et ajuste ses PARAMÈTRES (pas le
+risque) si — et seulement si — la validation récente est robuste. Voir
+la docstring de `recalibrate.py` pour le détail du critère de robustesse
+et tout ce qu'il ne touche jamais (risque, `active_symbols`, aucun
+ordre).
+
+Contrairement à `web_app.py` (service web réveillé par UptimeRobot), ce
+script tourne comme **Cron Job Render séparé** — un processus qui
+démarre, s'exécute jusqu'au bout, puis s'arrête, sur un planning
+(`render.yaml`, service `trading-bot-recalibrate`, une fois par mois).
+
+- **Il écrit dans `tradingbot_config.strategy_overrides`** (colonne
+  distincte des réglages de risque existants — jamais écrasés) —
+  `web_app.py` les applique au tick suivant, avant de construire la
+  stratégie.
+- **Il n'écrit RIEN** si les fenêtres hors-échantillon récentes ne sont
+  pas robustes : le bot continue avec les derniers paramètres en place.
+- Se lance aussi à la main, pour vérifier avant de laisser le cron
+  tourner seul :
+  ```bash
+  python recalibrate.py --dry-run   # calcule et affiche, n'écrit jamais
+  python recalibrate.py             # calcule et écrit si robuste
+  ```
+
+Déploiement (comme le service web, mais **New → Cron Job**, pas
+**Blueprint**, pour les mêmes raisons de Root Directory) :
+
+1. Sur [render.com](https://render.com) : **New → Cron Job**, connecte
+   le même repo GitHub.
+2. **Root Directory** : `trading_bot`. **Runtime** : Python 3. **Build
+   Command** : `pip install -r requirements.txt`. **Start Command** :
+   `python recalibrate.py`.
+3. **Schedule** : `0 3 1 * *` (le 1er de chaque mois à 3h UTC).
+4. Renseigne les mêmes variables d'environnement que le service web :
+   `SUPABASE_URL`, `SUPABASE_KEY`, `PYTHON_VERSION` (`3.11.9`).
+5. Un Cron Job Render n'est **pas nécessairement gratuit** comme le
+   service web (les plans disponibles dépendent de ton compte) — vérifie
+   le coût affiché avant de confirmer la création. Une exécution par mois
+   reste minime en tout état de cause (quelques minutes de calcul).
 
 ## 4. Vérifier que ça tourne
 

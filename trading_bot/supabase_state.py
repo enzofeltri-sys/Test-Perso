@@ -152,6 +152,27 @@ def load_config_overrides() -> dict:
         return {}
 
 
+def save_strategy_overrides(strategy_overrides: dict, note: str = None) -> None:
+    """Écrit les paramètres de stratégie recalibrés (voir recalibrate.py)
+    dans tradingbot_config.strategy_overrides — UNIQUEMENT cette colonne,
+    jamais les colonnes de risque/active_symbols existantes, qu'un humain
+    garde le contrôle total dessus. Upsert comme save_state(), donc les
+    autres colonnes déjà posées à la main ne sont pas touchées."""
+    url = f"{_base_url()}/tradingbot_config"
+    payload = {
+        "id": STATE_ID,
+        "strategy_overrides": strategy_overrides,
+        "updated_by": "recalibrate.py",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if note:
+        payload["note"] = note
+    headers = _headers()
+    headers["Prefer"] = "resolution=merge-duplicates"
+    resp = requests.post(url, headers=headers, json=payload, timeout=15)
+    resp.raise_for_status()
+
+
 def log_error(message: str) -> None:
     """Best-effort : un souci de logging ne doit jamais faire planter un
     cycle de trading, ni empêcher /tick de répondre correctement — donc

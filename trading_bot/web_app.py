@@ -38,6 +38,7 @@ import data
 import supabase_state as db
 from strategy import regime_strategy_from_config
 from risk import position_size, DailyLossCircuitBreaker, TotalDrawdownCircuitBreaker
+from walk_forward import _apply_overrides as _apply_strategy_param_overrides
 
 app = Flask(__name__)
 
@@ -134,6 +135,7 @@ STATUS_PAGE = """<!doctype html>
       <div class="stat"><div class="n">Positions ouvertes</div><div class="v {{ 'zero' if not positions else '' }}">{{ positions|length }}</div></div>
       <div class="stat"><div class="n">Coupe-circuit jour</div><div class="v {{ 'bad' if daily_tripped else '' }}">{{ 'déclenché' if daily_tripped else 'ok' }}</div></div>
       <div class="stat"><div class="n">Coupe-circuit total</div><div class="v {{ 'bad' if total_tripped else '' }}">{{ 'déclenché' if total_tripped else 'ok' }}</div></div>
+      <div class="stat"><div class="n">Stratégie</div><div class="v {{ '' if strategy_overrides else 'zero' }}" style="font-size:0.95rem;">{{ 'recalibrée (' ~ strategy_overrides|length ~ ' réglage' ~ ('s' if strategy_overrides|length > 1 else '') ~ ')' if strategy_overrides else 'config.yaml' }}</div></div>
     </div>
   </section>
 
@@ -264,6 +266,17 @@ def _apply_config_overrides(risk_cfg: dict, pf_cfg: dict, overrides: dict) -> se
     return set(active) if active else set(pf_cfg["symbols"])
 
 
+def _apply_strategy_overrides(base_strategy_cfg: dict, strategy_overrides: dict) -> dict:
+    """Applique les paramètres de stratégie recalibrés (voir
+    recalibrate.py) par-dessus config.yaml — mêmes clés pointées
+    ("trend.min_score_to_enter") que le walk-forward, puisque c'est
+    justement ce format que recalibrate.py écrit dans
+    tradingbot_config.strategy_overrides. Contrairement aux réglages de
+    risque (_apply_config_overrides), ceux-ci ne sont JAMAIS touchés à la
+    main — uniquement par recalibrate.py, sous condition de robustesse."""
+    return _apply_strategy_param_overrides(base_strategy_cfg, strategy_overrides or {})
+
+
 def run_tick() -> dict:
     cfg = load_config()
     pf_cfg = cfg["portfolio"]
@@ -275,6 +288,7 @@ def run_tick() -> dict:
 
     overrides = db.load_config_overrides()
     active_symbols = _apply_config_overrides(risk_cfg, pf_cfg, overrides)
+    strategy_cfg = _apply_strategy_overrides(cfg["strategy"], overrides.get("strategy_overrides"))
 
     symbols = pf_cfg["symbols"]
     exchange = data.get_exchange(ex_cfg["id"])
@@ -290,7 +304,7 @@ def run_tick() -> dict:
     # l'autre : la sous-stratégie active pour une position ouverte est
     # stockée dans `positions[symbol]["active_substrategy"]`, pas dans
     # l'objet stratégie — voir plus bas).
-    strategies = {s: regime_strategy_from_config(cfg["strategy"]) for s in symbols}
+    strategies = {s: regime_strategy_from_config(strategy_cfg) for s in symbols}
 
     state = db.load_state(initial_balance=pt_cfg["initial_balance"])
     cash = state["cash"]
@@ -463,8 +477,10 @@ def run_tick() -> dict:
                 "risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
                 "max_correlation_for_new_position", "correlation_lookback",
                 "momentum_lookback", "max_concurrent_positions", "active_symbols",
+                "strategy_overrides",
             )
         ),
+        "active_strategy_overrides": overrides.get("strategy_overrides") or {},
     }
 
 
@@ -492,6 +508,9 @@ def health():
         state = db.load_state(initial_balance=pt_cfg["initial_balance"])
         trades = db.get_recent_trades(limit=8)
         errors = db.get_recent_errors(limit=5)
+        # load_config_overrides() est déjà best-effort ({} si Supabase
+        # est injoignable ou si la table n'existe pas) — voir supabase_state.py.
+        strategy_overrides = db.load_config_overrides().get("strategy_overrides") or {}
 
         positions = [{"symbol": s, **p} for s, p in state["positions"].items() if p]
         daily_tripped = bool(state.get("daily_tripped_today"))
@@ -510,6 +529,7 @@ def health():
             cash=state["cash"], positions=positions,
             symbols=cfg["portfolio"]["symbols"],
             trades=trades_view, errors=errors_view,
+            strategy_overrides=strategy_overrides,
         ), 200
     except Exception:
         return "OK - bot de paper trading en ligne. Utilise /tick pour déclencher un cycle.", 200

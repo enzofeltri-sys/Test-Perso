@@ -238,6 +238,25 @@ ordre réel. Logue chaque trade simulé (avec la paire concernée) dans
 d'envisager le réel — et compare ce qui se passe en live à ce que le
 walk-forward avait laissé attendre.
 
+## Recalibrage automatique (`recalibrate.py`)
+
+```bash
+python recalibrate.py --dry-run   # calcule et affiche, n'écrit jamais
+python recalibrate.py             # calcule et écrit si robuste
+```
+
+Un script séparé, indépendant du déploiement continu (`web_app.py`),
+pensé pour tourner une fois par mois (voir `DEPLOIEMENT.md`, section
+3ter, pour le déployer en Cron Job Render). Il télécharge l'historique
+réel, relance le walk-forward avec le `param_grid` de `config.yaml`, et
+— seulement si les fenêtres hors-échantillon RÉCENTES sont robustes
+(rendement composé positif sur plusieurs fenêtres consécutives, pas une
+seule fenêtre isolée) — écrit les nouveaux paramètres dans Supabase
+(`tradingbot_config.strategy_overrides`), que `web_app.py` applique au
+tick suivant. Ne touche jamais aux paramètres de RISQUE (ceux-là restent
+sous contrôle humain exclusif via `tradingbot_config`) ni ne place
+d'ordre. N'écrit rien si les critères de robustesse ne sont pas remplis.
+
 ## Passer au réel — à lire avant d'aller plus loin
 
 Ce projet s'arrête volontairement avant l'envoi d'ordres réels.

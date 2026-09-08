@@ -34,3 +34,28 @@ services:
         sync: false   # à renseigner manuellement dans le dashboard Render (clé "anon")
       - key: PYTHON_VERSION
         value: "3.11.9"
+
+  # Recalibrage mensuel des paramètres de stratégie (walk-forward sur
+  # l'historique réel, voir recalibrate.py et DEPLOIEMENT.md section 3ter).
+  # Service SÉPARÉ du web service ci-dessus, PAS réveillé par UptimeRobot :
+  # un Cron Job démarre, s'exécute jusqu'au bout, s'arrête, sur ce planning.
+  # N'écrit jamais les paramètres de risque, jamais d'ordre.
+  #
+  # ⚠️ Contrairement au service web, un Cron Job Render n'est pas
+  # nécessairement gratuit (dépend du plan disponible sur le compte) —
+  # vérifie le coût affiché dans le dashboard avant de confirmer.
+  - type: cron
+    name: trading-bot-recalibrate
+    runtime: python
+    plan: free
+    region: frankfurt
+    schedule: "0 3 1 * *"   # le 1er de chaque mois à 3h UTC
+    buildCommand: pip install -r requirements.txt
+    startCommand: python recalibrate.py
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.9"
