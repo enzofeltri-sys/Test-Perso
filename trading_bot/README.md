@@ -259,7 +259,7 @@ sous contrôle humain exclusif via `tradingbot_config`) ni ne place
 d'ordre. N'écrit rien si les critères de robustesse ne sont pas remplis.
 
 L'historique profond nécessaire au walk-forward est téléchargé depuis
-`exchange.history_exchange_id` (`binance` par défaut, voir
+`exchange.history_exchange_id` (`bybit` par défaut, voir
 `config.yaml`) plutôt que `exchange.id` (`kucoin`, l'exchange EN DIRECT
 de `web_app.py`) : kucoin plafonne son historique 1h public à ~83 jours
 quel que soit `since_days` demandé, insuffisant pour

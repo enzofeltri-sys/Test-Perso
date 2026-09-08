@@ -18,11 +18,14 @@ exchange:
   # et de recalibrate.py (main.py backtest/validate, recalibrate.py) —
   # kucoin plafonne son historique 1h public à ~83 jours (~2000 bougies)
   # quel que soit since_days demandé, insuffisant pour train_days+test_days
-  # (vérifié empiriquement). binance a un historique bien plus profond et,
-  # contrairement au service web sur Render, n'est PAS bloqué depuis les
-  # runners GitHub Actions (vérifié aussi) — recalibrate.py n'y tourne
-  # jamais, donc le blocage géographique de Render ne le concerne pas.
-  history_exchange_id: binance
+  # (vérifié empiriquement).
+  # binance a un historique bien plus profond MAIS bloque aussi (451
+  # "restricted location") une partie du pool d'IP GitHub Actions — vu de
+  # façon inconsistante d'un run à l'autre (fonctionne parfois, échoue
+  # parfois selon l'IP tirée), donc écarté malgré la profondeur d'historique
+  # : inacceptable pour un cron mensuel automatique qui doit être fiable.
+  # bybit a montré le même historique profond sans blocage observé.
+  history_exchange_id: bybit
   timeframe: 1h         # bougie: 1m, 5m, 15m, 1h, 4h, 1d, ...
 
 # ---------------------------------------------------------------
