@@ -109,6 +109,29 @@ def log_trade(symbol: str, side: str, price: float, qty: float, reason: str,
     resp.raise_for_status()
 
 
+def get_recent_trades(limit: int = 10) -> list:
+    """Les derniers trades journalisés, du plus récent au plus ancien —
+    utilisé par la page de statut de web_app.py."""
+    url = f"{_base_url()}/tradingbot_trades"
+    resp = requests.get(
+        url, headers=_headers(),
+        params={"select": "*", "order": "ts.desc", "limit": str(limit)}, timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_recent_errors(limit: int = 5) -> list:
+    """Les dernières erreurs journalisées, du plus récent au plus ancien."""
+    url = f"{_base_url()}/tradingbot_errors"
+    resp = requests.get(
+        url, headers=_headers(),
+        params={"select": "*", "order": "ts.desc", "limit": str(limit)}, timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def log_error(message: str) -> None:
     """Best-effort : un souci de logging ne doit jamais faire planter un
     cycle de trading."""

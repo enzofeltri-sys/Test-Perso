@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import yaml
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template_string
 
 import data
 import supabase_state as db
@@ -40,6 +40,142 @@ from strategy import regime_strategy_from_config
 from risk import position_size, DailyLossCircuitBreaker, TotalDrawdownCircuitBreaker
 
 app = Flask(__name__)
+
+STATUS_PAGE = """<!doctype html>
+<title>Journal de bord — bot de trading</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
+    --rule:#DBDBD6; --accent:#96622A; --green:#3E7A52; --red:#A3453A;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
+      --rule:#333432; --accent:#CB9855; --green:#6FAE87; --red:#D08076;
+    }
+  }
+  *{ box-sizing:border-box; margin:0; }
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    line-height:1.55;
+  }
+  .wrap{ max-width:600px; margin:0 auto; padding:72px 24px 96px; }
+  .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; }
+  header{ margin-bottom:56px; }
+  .kicker{
+    font-family:"IBM Plex Mono", monospace; font-size:0.72rem; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 14px;
+  }
+  h1{
+    font-family:"Fraunces", Georgia, serif; font-weight:500; font-size:2.1rem;
+    letter-spacing:-0.01em; line-height:1.08; margin:0 0 16px; text-wrap:balance;
+  }
+  .status-line{ display:flex; align-items:baseline; gap:9px; font-size:0.88rem; color:var(--text-muted); }
+  .status-line .dot{ width:6px; height:6px; border-radius:50%; display:inline-block; }
+  .status-line .dot.ok{ background:var(--green); }
+  .status-line .dot.bad{ background:var(--red); }
+  .status-line strong{ color:var(--text); font-weight:500; }
+  section{ padding:30px 0; border-top:1px solid var(--rule); }
+  section > .label{
+    font-family:"IBM Plex Mono", monospace; font-size:0.7rem; letter-spacing:0.1em;
+    text-transform:uppercase; color:var(--text-faint); margin:0 0 20px;
+  }
+  .stats{ display:grid; grid-template-columns:1fr 1fr; row-gap:20px; }
+  .stat .n{ font-size:0.78rem; color:var(--text-muted); margin-bottom:3px; }
+  .stat .v{ font-family:"IBM Plex Mono", monospace; font-variant-numeric:tabular-nums; font-size:1.1rem; }
+  .stat .v.zero{ color:var(--text-faint); }
+  .stat .v.bad{ color:var(--red); }
+  .row{ display:flex; justify-content:space-between; align-items:baseline; gap:16px; padding:11px 0; }
+  .row + .row{ border-top:1px solid var(--rule); }
+  .row .name{ font-weight:500; font-size:0.9rem; }
+  .row .detail{ font-size:0.79rem; color:var(--text-muted); margin-top:2px; }
+  .row .side{ font-family:"IBM Plex Mono", monospace; font-size:0.74rem; white-space:nowrap; flex-shrink:0; }
+  .row .side.buy{ color:var(--green); }
+  .row .side.sell{ color:var(--red); }
+  .empty{ font-size:0.85rem; color:var(--text-faint); }
+  footer{ padding-top:30px; border-top:1px solid var(--rule); font-size:0.82rem; color:var(--text-muted); }
+  footer a{ color:var(--accent); }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="kicker">Bot de trading crypto — paper trading</p>
+    <h1>Journal de bord</h1>
+    <p class="status-line">
+      <span class="dot {{ 'ok' if healthy else 'bad' }}"></span>
+      <strong>{{ 'En ligne' if healthy else 'Coupe-circuit déclenché' }}</strong>
+      — {{ symbols|join(' · ') }}
+    </p>
+  </header>
+
+  <section>
+    <p class="label">État actuel</p>
+    <div class="stats">
+      <div class="stat"><div class="n">Cash</div><div class="v">${{ '%.2f'|format(cash) }}</div></div>
+      <div class="stat"><div class="n">Positions ouvertes</div><div class="v {{ 'zero' if not positions else '' }}">{{ positions|length }}</div></div>
+      <div class="stat"><div class="n">Coupe-circuit jour</div><div class="v {{ 'bad' if daily_tripped else '' }}">{{ 'déclenché' if daily_tripped else 'ok' }}</div></div>
+      <div class="stat"><div class="n">Coupe-circuit total</div><div class="v {{ 'bad' if total_tripped else '' }}">{{ 'déclenché' if total_tripped else 'ok' }}</div></div>
+    </div>
+  </section>
+
+  <section>
+    <p class="label">Positions ouvertes</p>
+    {% if positions %}
+      {% for p in positions %}
+      <div class="row">
+        <div>
+          <div class="name">{{ p.symbol }}</div>
+          <div class="detail">{{ '%.6f'|format(p.qty) }} @ ${{ '%.2f'|format(p.entry_price) }} · stop ${{ '%.2f'|format(p.stop_price) }} · target ${{ '%.2f'|format(p.target_price) }}</div>
+        </div>
+        <span class="side mono">{{ p.active_substrategy or '—' }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">Aucune position ouverte en ce moment.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <p class="label">Derniers trades</p>
+    {% if trades %}
+      {% for t in trades %}
+      <div class="row">
+        <div>
+          <div class="name">{{ t.symbol }}</div>
+          <div class="detail">{{ t.ts }} · {{ t.reason }} · {{ '%.6f'|format(t.qty) }} @ ${{ '%.2f'|format(t.price) }}</div>
+        </div>
+        <span class="side mono {{ t.side }}">{{ t.side }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">Aucun trade pour l'instant.</p>
+    {% endif %}
+  </section>
+
+  {% if errors %}
+  <section>
+    <p class="label">Dernières erreurs</p>
+    {% for e in errors %}
+    <div class="row">
+      <div>
+        <div class="detail">{{ e.ts }}</div>
+        <div class="name" style="font-size:0.82rem;font-weight:400;">{{ e.message }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <footer>
+    <p>Rafraîchit à chaque chargement · <a href="/tick">/tick</a> déclenche un cycle manuellement (UptimeRobot le fait déjà toutes les 5 min).</p>
+  </footer>
+</div>
+"""
 
 
 def load_config() -> dict:
@@ -228,12 +364,51 @@ def run_tick() -> dict:
     }
 
 
+def _fmt_ts(ts_str):
+    if not ts_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        return dt.strftime("%d/%m %H:%M UTC")
+    except (ValueError, TypeError):
+        return ts_str
+
+
 @app.route("/")
 def health():
-    # endpoint minimal pour Render (vérifie que le service répond) et
-    # pour un ping UptimeRobot "simple" qui ne doit PAS déclencher de
-    # cycle de trading (voir /tick pour ça).
-    return "OK - bot de paper trading en ligne. Utilise /tick pour déclencher un cycle.", 200
+    # Page de statut lisible pour Render (vérifie que le service répond) et
+    # pour un humain qui ouvre l'URL — /tick reste l'endpoint que ping
+    # UptimeRobot pour déclencher un cycle, pas celui-ci. Ne doit JAMAIS
+    # faire échouer le health-check : un souci Supabase retombe sur le
+    # texte brut d'origine plutôt que de planter la page.
+    try:
+        cfg = load_config()
+        pt_cfg = cfg["paper_trading"]
+
+        state = db.load_state(initial_balance=pt_cfg["initial_balance"])
+        trades = db.get_recent_trades(limit=8)
+        errors = db.get_recent_errors(limit=5)
+
+        positions = [{"symbol": s, **p} for s, p in state["positions"].items() if p]
+        daily_tripped = bool(state.get("daily_tripped_today"))
+        total_tripped = bool(state.get("total_dd_tripped"))
+
+        trades_view = [{
+            "ts": _fmt_ts(t.get("ts")), "symbol": t.get("symbol"), "side": t.get("side"),
+            "price": t.get("price"), "qty": t.get("qty"), "reason": t.get("reason"),
+        } for t in trades]
+        errors_view = [{"ts": _fmt_ts(e.get("ts")), "message": e.get("message")} for e in errors]
+
+        return render_template_string(
+            STATUS_PAGE,
+            healthy=not (daily_tripped or total_tripped),
+            daily_tripped=daily_tripped, total_tripped=total_tripped,
+            cash=state["cash"], positions=positions,
+            symbols=cfg["portfolio"]["symbols"],
+            trades=trades_view, errors=errors_view,
+        ), 200
+    except Exception:
+        return "OK - bot de paper trading en ligne. Utilise /tick pour déclencher un cycle.", 200
 
 
 @app.route("/tick")
