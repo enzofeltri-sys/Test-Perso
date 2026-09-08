@@ -26,6 +26,7 @@ Aucun ordre réel n'est jamais envoyé par ce module. Variables
 d'environnement requises : voir supabase_state.py et render.yaml.
 """
 
+import json
 import os
 import traceback
 from datetime import datetime, timezone
@@ -294,6 +295,53 @@ def _apply_strategy_overrides(base_strategy_cfg: dict, strategy_overrides: dict)
     return _apply_strategy_param_overrides(base_strategy_cfg, strategy_overrides or {})
 
 
+CONFIG_OVERRIDE_KEYS = (
+    "risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
+    "max_correlation_for_new_position", "correlation_lookback",
+    "momentum_lookback", "max_concurrent_positions", "active_symbols",
+    "strategy_overrides",
+)
+
+
+def _config_fingerprint(overrides: dict) -> str:
+    """Empreinte stable des réglages effectivement posés dans
+    tradingbot_config (clés non nulles uniquement) — basée sur le CONTENU,
+    pas sur updated_at, pour qu'un manager qui oublie de mettre updated_at
+    à jour soit quand même acquitté."""
+    active = {k: overrides.get(k) for k in CONFIG_OVERRIDE_KEYS if overrides.get(k) is not None}
+    return json.dumps(active, sort_keys=True, default=str)
+
+
+def _acknowledge_config_changes(overrides: dict) -> None:
+    """Ferme la boucle manager -> bot : quand tradingbot_config change (par
+    le manager, ou par recalibrate.py), le bot le dit UNE fois dans le
+    journal au lieu d'appliquer en silence. L'entrée de journal est
+    elle-même l'acquittement (data.event='config_change' + empreinte) :
+    aucun état en mémoire, aucune colonne supplémentaire."""
+    fingerprint = _config_fingerprint(overrides)
+    last = db.get_last_journal_event("config_change")
+    last_fingerprint = (last.get("data") or {}).get("fingerprint") if last else None
+    if fingerprint == last_fingerprint:
+        return
+    if fingerprint == "{}" and last_fingerprint is None:
+        return  # jamais eu de réglage manager : rien à acquitter
+
+    who = overrides.get("updated_by") or "inconnu"
+    note = overrides.get("note")
+    active = json.loads(fingerprint)
+    if active:
+        details = ", ".join(f"{k}={v}" for k, v in active.items())
+        message = (f"Réglages tradingbot_config modifiés (par {who}"
+                   + (f", note : « {note} »" if note else "")
+                   + f") : {details}. Appliqués à partir de ce cycle.")
+    else:
+        message = (f"Réglages tradingbot_config remis à zéro (par {who}) : retour aux "
+                   "valeurs de config.yaml à partir de ce cycle.")
+    db.log_journal_entry("bot", message, data={
+        "event": "config_change", "fingerprint": fingerprint, "updated_by": who,
+    })
+
+
 def run_tick() -> dict:
     cfg = load_config()
     pf_cfg = cfg["portfolio"]
@@ -304,6 +352,7 @@ def run_tick() -> dict:
     slippage_pct = cfg["backtest"].get("slippage_pct", 0.0)
 
     overrides = db.load_config_overrides()
+    _acknowledge_config_changes(overrides)
     active_symbols = _apply_config_overrides(risk_cfg, pf_cfg, overrides)
     strategy_cfg = _apply_strategy_overrides(cfg["strategy"], overrides.get("strategy_overrides"))
 
@@ -358,8 +407,32 @@ def run_tick() -> dict:
     equity = cash + sum(positions[s]["qty"] * prices[s] for s in rows if positions.get(s))
 
     now = datetime.now(timezone.utc)
+    daily_was_tripped = daily_breaker._tripped_today
+    total_was_tripped = total_dd_breaker._tripped
     daily_breaker.update(now, equity)
     total_dd_breaker.update(equity)
+
+    # un coupe-circuit qui se déclenche est journalisé UNE fois (à la
+    # transition), pas à chaque tick tant qu'il reste déclenché
+    if daily_breaker._tripped_today and not daily_was_tripped:
+        db.log_journal_entry(
+            "bot",
+            f"Coupe-circuit journalier déclenché : équity {equity:.2f} contre "
+            f"{daily_breaker._equity_at_day_start:.2f} en début de journée "
+            f"(seuil -{risk_cfg['max_daily_loss_pct'] * 100:.0f}%). Plus aucune nouvelle "
+            "entrée aujourd'hui, les positions ouvertes restent gérées normalement.",
+            data={"event": "circuit_breaker", "kind": "daily", "equity": equity},
+        )
+    if total_dd_breaker._tripped and not total_was_tripped:
+        db.log_journal_entry(
+            "bot",
+            f"Coupe-circuit de drawdown TOTAL déclenché : équity {equity:.2f}, plus haut "
+            f"historique {total_dd_breaker._peak_equity:.2f} "
+            f"(seuil -{risk_cfg['max_total_drawdown_pct'] * 100:.0f}%). Plus aucune nouvelle "
+            "entrée tant qu'un humain n'a pas révisé la situation — ce coupe-circuit ne se "
+            "réarme jamais tout seul.",
+            data={"event": "circuit_breaker", "kind": "total_drawdown", "equity": equity},
+        )
 
     trades_this_tick = []
 
@@ -391,6 +464,16 @@ def run_tick() -> dict:
             equity_now = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
             db.log_trade(s, "sell", exit_price, pos["qty"], exit_reason, cash, equity_now)
             trades_this_tick.append({"symbol": s, "side": "sell", "price": exit_price, "reason": exit_reason})
+            pnl_pct = (exit_price / pos["entry_price"] - 1) * 100
+            reason_label = {"stop_loss": "stop-loss touché", "take_profit": "objectif atteint",
+                            "signal": "signal de sortie"}.get(exit_reason, exit_reason)
+            db.log_journal_entry(
+                "bot",
+                f"Vente {s} : {pos['qty']:.6f} @ {exit_price:.2f} ({reason_label}), entrée à "
+                f"{pos['entry_price']:.2f} → {pnl_pct:+.2f}% avant frais.",
+                data={"event": "trade", "side": "sell", "symbol": s, "reason": exit_reason,
+                      "price": exit_price, "qty": pos["qty"], "pnl_pct": pnl_pct},
+            )
 
     # 2) entrées — coupe-circuits, puis priorisation par momentum, puis
     #    filtre anti-corrélation (identique à paper_trader.py).
@@ -465,6 +548,14 @@ def run_tick() -> dict:
                 equity_after = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
                 db.log_trade(s, "buy", fill_price, qty, "signal", cash, equity_after)
                 trades_this_tick.append({"symbol": s, "side": "buy", "price": fill_price, "reason": "signal"})
+                regime_label = "tendance (EMA/MACD/volume)" if active == "trend" else "retournement (Bollinger/RSI)"
+                db.log_journal_entry(
+                    "bot",
+                    f"Achat {s} : {qty:.6f} @ {fill_price:.2f} — signal de {regime_label}, "
+                    f"stop {stop_p:.2f}, objectif {target_p:.2f}.",
+                    data={"event": "trade", "side": "buy", "symbol": s, "regime": active,
+                          "price": fill_price, "qty": qty, "stop": stop_p, "target": target_p},
+                )
 
     total_equity = cash + sum(positions[s]["qty"] * prices[s] for s in rows if positions.get(s))
 

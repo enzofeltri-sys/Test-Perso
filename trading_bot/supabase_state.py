@@ -169,6 +169,27 @@ def get_recent_journal(limit: int = 10) -> list:
         return []
 
 
+def get_last_journal_event(event: str) -> dict:
+    """Dernière entrée du journal dont data.event vaut `event` (ex :
+    'config_change'), ou {} s'il n'y en a pas. Sert au bot — qui ne garde
+    aucun état en mémoire d'un tick à l'autre — à savoir ce qu'il a déjà
+    acquitté, sans colonne supplémentaire dans tradingbot_state : l'entrée
+    de journal EST l'acquittement. Best-effort ({} si la table n'existe
+    pas encore)."""
+    try:
+        url = f"{_base_url()}/tradingbot_journal"
+        resp = requests.get(
+            url, headers=_headers(),
+            params={"select": "*", "data->>event": f"eq.{event}", "order": "ts.desc", "limit": "1"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0] if rows else {}
+    except Exception:
+        return {}
+
+
 def load_config_overrides() -> dict:
     """Réglages ajustables à la volée (sans redéployer), posés dans la
     table tradingbot_config — voir DEPLOIEMENT.md, section 'Ajuster le

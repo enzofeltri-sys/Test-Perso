@@ -1,0 +1,31 @@
+name: Tests
+
+# Suite pytest du bot (trading_bot/tests) à chaque push et pull request —
+# aucun réseau requis, tout est simulé (données de marché synthétiques,
+# faux backend Supabase). Empêche une régression silencieuse de partir
+# en prod : Render déploie automatiquement à chaque push sur la branche
+# suivie, sans attendre ce résultat, donc regarder ce statut avant de
+# considérer un push comme bon.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trading_bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Lancer les tests
+        run: python -m pytest tests/ -q

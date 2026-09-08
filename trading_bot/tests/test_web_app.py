@@ -27,6 +27,7 @@ class FakeDB:
         self.state = None
         self.trades = []
         self.errors = []
+        self.journal = []
         self.overrides = overrides or {}
 
     def load_state(self, initial_balance):
@@ -61,7 +62,16 @@ class FakeDB:
         return []
 
     def get_recent_journal(self, limit=10):
-        return []
+        return list(reversed(self.journal))[:limit]
+
+    def log_journal_entry(self, author, message, data=None):
+        self.journal.append({"author": author, "message": message, "data": data})
+
+    def get_last_journal_event(self, event):
+        for entry in reversed(self.journal):
+            if (entry.get("data") or {}).get("event") == event:
+                return entry
+        return {}
 
 
 class Clock:
@@ -374,3 +384,114 @@ def test_status_page_survives_journal_lookup_failure(monkeypatch):
     # mais si jamais il lève, la page de statut entière ne doit pas planter
     # pour autant : repli sur le texte brut, toujours 200.
     assert resp.status_code == 200
+
+
+def _patch_market(monkeypatch, symbols, clock):
+    histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+
+
+def _journal_events(fake_db, event):
+    return [e for e in fake_db.journal if (e.get("data") or {}).get("event") == event]
+
+
+def test_run_tick_acknowledges_config_changes_once(monkeypatch):
+    """Quand le manager change tradingbot_config, le bot le dit dans le
+    journal — une seule fois, pas à chaque tick tant que rien ne change."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    clock = Clock(idx=250)
+    _patch_market(monkeypatch, symbols, clock)
+    fake_db = FakeDB(overrides={"risk_per_trade_pct": 0.005, "updated_by": "enzo", "note": "resserré"})
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    for _ in range(3):
+        clock.idx += 5
+        web_app.run_tick()
+
+    acks = _journal_events(fake_db, "config_change")
+    assert len(acks) == 1
+    assert acks[0]["author"] == "bot"
+    assert "enzo" in acks[0]["message"]
+    assert "risk_per_trade_pct=0.005" in acks[0]["message"]
+    assert "resserré" in acks[0]["message"]
+
+    # le manager change à nouveau la config -> nouvel acquittement, un seul
+    fake_db.overrides = {"active_symbols": [symbols[0]], "updated_by": "cowork"}
+    for _ in range(2):
+        clock.idx += 5
+        web_app.run_tick()
+
+    acks = _journal_events(fake_db, "config_change")
+    assert len(acks) == 2
+    assert "cowork" in acks[1]["message"]
+    assert symbols[0] in acks[1]["message"]
+
+
+def test_run_tick_does_not_journal_config_when_no_override_was_ever_set(monkeypatch):
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    clock = Clock(idx=250)
+    _patch_market(monkeypatch, symbols, clock)
+    fake_db = FakeDB()  # aucun réglage manager
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    clock.idx += 5
+    web_app.run_tick()
+
+    assert _journal_events(fake_db, "config_change") == []
+
+
+def test_run_tick_journals_every_trade_with_its_reason(monkeypatch):
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    clock = Clock(idx=250)
+    _patch_market(monkeypatch, symbols, clock)
+    fake_db = FakeDB()
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    for _ in range(60):
+        clock.idx += 5
+        web_app.run_tick()
+
+    trade_entries = _journal_events(fake_db, "trade")
+    assert fake_db.trades, "aucun trade sur 60 ticks : le test ne couvre rien"
+    assert len(trade_entries) == len(fake_db.trades)
+    for e in trade_entries:
+        assert e["author"] == "bot"
+        if e["data"]["side"] == "buy":
+            assert e["data"]["regime"] in ("trend", "range")
+        else:
+            assert e["data"]["reason"] in ("stop_loss", "take_profit", "signal")
+
+
+def test_run_tick_journals_daily_circuit_breaker_once(monkeypatch):
+    from datetime import datetime, timezone
+
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    clock = Clock(idx=250)
+    _patch_market(monkeypatch, symbols, clock)
+    fake_db = FakeDB()
+    # équity actuelle 1000, journée démarrée à 2000 -> -50%, bien au-delà du seuil
+    fake_db.state = {
+        "cash": 1000.0, "positions": {},
+        "daily_current_day": datetime.now(timezone.utc).date(),
+        "daily_equity_at_day_start": 2000.0, "daily_tripped_today": False,
+        "total_dd_peak_equity": None, "total_dd_tripped": False,
+    }
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    clock.idx += 5
+    result = web_app.run_tick()
+    assert result["daily_breaker_tripped"] is True
+    assert len(_journal_events(fake_db, "circuit_breaker")) == 1
+
+    clock.idx += 5
+    web_app.run_tick()
+    assert len(_journal_events(fake_db, "circuit_breaker")) == 1, "déclenché déjà acquitté : pas de doublon"

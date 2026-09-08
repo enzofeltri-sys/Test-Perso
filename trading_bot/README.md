@@ -48,6 +48,11 @@ régime (hystérésis), la non-fuite d'état entre paires de la stratégie à
 bascule, et un test de bout en bout du backtest portefeuille + walk-forward
 sur données synthétiques (pas de réseau requis).
 
+Ils tournent aussi automatiquement à chaque push et pull request
+(`.github/workflows/tests.yml`) — Render redéploie à chaque push sans
+attendre ce résultat, donc regarder le statut de ce workflow avant de
+considérer un push comme bon.
+
 ## Architecture de la stratégie
 
 ### 1. Bascule selon le régime de marché (`regime.py`, `strategy.py`)

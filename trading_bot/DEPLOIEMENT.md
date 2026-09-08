@@ -286,12 +286,29 @@ Deux canaux distincts, à ne pas confondre :
   Supabase (mobile inclus) ou sur la page de statut (`/`, section
   « Journal »).
 
-À chaque exécution, `recalibrate.py` y écrit une entrée (`author='bot'`)
-expliquant ce qu'il a fait et pourquoi : combien de fenêtres
-hors-échantillon trouvées, le rendement composé récent, si c'était
-robuste, et s'il a recalibré ou non (avec les nouveaux paramètres le cas
-échéant). C'est la même donnée que celle affichée dans les logs GitHub
-Actions, mais persistée et lisible sans creuser dans les logs.
+Le bot y écrit (`author='bot'`), en langage clair :
+
+- **`recalibrate.py`, à chaque exécution** : combien de fenêtres
+  hors-échantillon trouvées, le rendement composé récent, si c'était
+  robuste, et s'il a recalibré ou non (avec les nouveaux paramètres le
+  cas échéant). Même donnée que les logs GitHub Actions, mais persistée.
+- **`web_app.py`, en direct, sur les événements notables seulement**
+  (pas à chaque tick) :
+  - **acquittement d'un changement de `tradingbot_config`** — quand le
+    manager (ou `recalibrate.py`) modifie les réglages, le bot le dit une
+    fois (« modifiés par X, note : …, appliqués à partir de ce cycle »)
+    au lieu d'appliquer en silence. Détecté sur le contenu, pas sur
+    `updated_at` — un manager qui oublie de mettre `updated_at` à jour
+    est quand même acquitté ;
+  - **chaque trade**, avec sa raison (signal de tendance ou de
+    retournement à l'achat ; stop, objectif ou signal de sortie à la
+    vente, avec le résultat en % avant frais) ;
+  - **un coupe-circuit qui se déclenche** (journalier ou drawdown
+    total), une fois à la transition.
+
+`data` (jsonb) porte un champ `event` (`config_change`, `trade`,
+`circuit_breaker`, ou rien pour les entrées de `recalibrate.py`) pour
+filtrer facilement.
 
 Le **manager** — toi, ou Claude Cowork avec les mêmes accès Supabase —
 peut y répondre en écrivant ses propres entrées (`author='manager'`),
