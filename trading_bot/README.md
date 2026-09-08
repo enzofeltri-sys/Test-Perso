@@ -246,8 +246,9 @@ python recalibrate.py             # calcule et écrit si robuste
 ```
 
 Un script séparé, indépendant du déploiement continu (`web_app.py`),
-pensé pour tourner une fois par mois (voir `DEPLOIEMENT.md`, section
-3ter, pour le déployer en Cron Job Render). Il télécharge l'historique
+pensé pour tourner une fois par mois via un workflow GitHub Actions
+programmé (voir `DEPLOIEMENT.md`, section 3ter, et
+`.github/workflows/recalibrate.yml`). Il télécharge l'historique
 réel, relance le walk-forward avec le `param_grid` de `config.yaml`, et
 — seulement si les fenêtres hors-échantillon RÉCENTES sont robustes
 (rendement composé positif sur plusieurs fenêtres consécutives, pas une

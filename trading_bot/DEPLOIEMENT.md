@@ -25,9 +25,9 @@ ce projet.
 
 Un quatrième composant optionnel, `recalibrate.py` (section 3ter),
 revalide la stratégie une fois par mois sur l'historique réel et ajuste
-ses paramètres si la validation est robuste — un Cron Job Render séparé,
-pas nécessairement gratuit contrairement aux trois premiers (voir cette
-section pour le détail du coût).
+ses paramètres si la validation est robuste — via un workflow GitHub
+Actions programmé (gratuit), pas Render (son Cron Job exige un plan
+payant, contrairement au service web).
 
 ## 1. Les tables Supabase
 
@@ -208,9 +208,11 @@ et tout ce qu'il ne touche jamais (risque, `active_symbols`, aucun
 ordre).
 
 Contrairement à `web_app.py` (service web réveillé par UptimeRobot), ce
-script tourne comme **Cron Job Render séparé** — un processus qui
-démarre, s'exécute jusqu'au bout, puis s'arrête, sur un planning
-(`render.yaml`, service `trading-bot-recalibrate`, une fois par mois).
+script tourne comme **workflow GitHub Actions programmé** — pas sur
+Render : un Cron Job Render exige un plan payant (vérifié en essayant
+d'en créer un : aucune option gratuite, contrairement au service web),
+alors que GitHub Actions est gratuit pour un déclenchement mensuel de
+quelques minutes (généreux quota gratuit, y compris sur un repo privé).
 
 - **Il écrit dans `tradingbot_config.strategy_overrides`** (colonne
   distincte des réglages de risque existants — jamais écrasés) —
@@ -218,28 +220,27 @@ démarre, s'exécute jusqu'au bout, puis s'arrête, sur un planning
   stratégie.
 - **Il n'écrit RIEN** si les fenêtres hors-échantillon récentes ne sont
   pas robustes : le bot continue avec les derniers paramètres en place.
-- Se lance aussi à la main, pour vérifier avant de laisser le cron
-  tourner seul :
+- Se lance aussi à la main, en local, pour vérifier avant de laisser le
+  planning tourner seul :
   ```bash
   python recalibrate.py --dry-run   # calcule et affiche, n'écrit jamais
   python recalibrate.py             # calcule et écrit si robuste
   ```
 
-Déploiement (comme le service web, mais **New → Cron Job**, pas
-**Blueprint**, pour les mêmes raisons de Root Directory) :
+Le workflow (`.github/workflows/recalibrate.yml`) est déjà dans le
+repo — il ne reste que les secrets à configurer :
 
-1. Sur [render.com](https://render.com) : **New → Cron Job**, connecte
-   le même repo GitHub.
-2. **Root Directory** : `trading_bot`. **Runtime** : Python 3. **Build
-   Command** : `pip install -r requirements.txt`. **Start Command** :
-   `python recalibrate.py`.
-3. **Schedule** : `0 3 1 * *` (le 1er de chaque mois à 3h UTC).
-4. Renseigne les mêmes variables d'environnement que le service web :
-   `SUPABASE_URL`, `SUPABASE_KEY`, `PYTHON_VERSION` (`3.11.9`).
-5. Un Cron Job Render n'est **pas nécessairement gratuit** comme le
-   service web (les plans disponibles dépendent de ton compte) — vérifie
-   le coût affiché avant de confirmer la création. Une exécution par mois
-   reste minime en tout état de cause (quelques minutes de calcul).
+1. Sur GitHub, dans le repo : **Settings → Secrets and variables →
+   Actions → New repository secret**.
+2. Ajoute `SUPABASE_URL` et `SUPABASE_KEY` (les mêmes valeurs que celles
+   renseignées dans Render pour le service web).
+3. Le workflow se déclenche automatiquement le 1er de chaque mois à 3h
+   UTC. Pour tester sans attendre : onglet **Actions** du repo →
+   « Recalibrage mensuel du bot de trading » → **Run workflow**
+   (déclenchement manuel, `workflow_dispatch`).
+4. Résultat visible dans les logs du run (Actions → le run en question)
+   et, si un recalibrage a été appliqué, dans
+   `tradingbot_config.strategy_overrides` sur Supabase.
 
 ## 4. Vérifier que ça tourne
 

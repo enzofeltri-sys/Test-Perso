@@ -1,0 +1,38 @@
+name: Recalibrage mensuel du bot de trading
+
+# Revalide la stratégie sur l'historique réel (walk-forward) et met à
+# jour tradingbot_config.strategy_overrides si — et seulement si — la
+# validation récente est robuste. Voir trading_bot/recalibrate.py et
+# trading_bot/DEPLOIEMENT.md (section 3ter). Ne touche jamais au risque,
+# ne place jamais d'ordre.
+#
+# Nécessite deux secrets de dépôt (Settings -> Secrets and variables ->
+# Actions) : SUPABASE_URL et SUPABASE_KEY (la clé "anon" du projet
+# Supabase dédié, la même que web_app.py sur Render).
+
+on:
+  schedule:
+    - cron: "0 3 1 * *"   # le 1er de chaque mois à 3h UTC
+  workflow_dispatch: {}    # déclenchement manuel depuis l'onglet Actions, pour tester
+
+jobs:
+  recalibrate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trading_bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Recalibrer
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python recalibrate.py
