@@ -177,6 +177,9 @@ class PortfolioBacktester:
                         "symbol": s, "entry_time": pos["entry_time"], "entry_price": pos["entry_price"],
                         "qty": pos["qty"], "exit_time": ts, "exit_price": exit_price,
                         "exit_reason": exit_reason, "pnl": pnl,
+                        # quelle sous-stratégie a ouvert ce trade (trend / range) —
+                        # à lire AVANT on_position_closed(), qui remet l'état à neutre
+                        "regime": getattr(strategies[s], "active_regime", None),
                     })
                     positions[s] = None
                     strategies[s].on_position_closed()
@@ -285,10 +288,15 @@ class PortfolioBacktester:
 
         exit_reasons = {}
         per_symbol = {s: {"num_trades": 0, "pnl": 0.0} for s in symbols}
+        per_regime = {}
         for t in trades:
             exit_reasons[t["exit_reason"]] = exit_reasons.get(t["exit_reason"], 0) + 1
             per_symbol[t["symbol"]]["num_trades"] += 1
             per_symbol[t["symbol"]]["pnl"] += t["pnl"]
+            regime = t.get("regime") or "unknown"
+            bucket = per_regime.setdefault(regime, {"num_trades": 0, "pnl": 0.0})
+            bucket["num_trades"] += 1
+            bucket["pnl"] += t["pnl"]
 
         return {
             "final_equity": final_equity,
@@ -301,6 +309,7 @@ class PortfolioBacktester:
             "profit_factor": profit_factor,
             "exit_reasons": exit_reasons,
             "per_symbol": per_symbol,
+            "per_regime": per_regime,   # P&L par sous-stratégie (trend / range) — laquelle perd ?
             "circuit_breaker_blocks": breaker_blocks,
             "total_drawdown_breaker_blocks": total_dd_blocks,
             "correlation_blocks": correlation_blocks,

@@ -46,6 +46,21 @@ def test_portfolio_backtest_runs_end_to_end(portfolio_data):
     assert result["circuit_breaker_blocks"] >= 0
 
 
+def test_trades_record_which_substrategy_opened_them(portfolio_data):
+    """Le diagnostic doit pouvoir dire QUELLE jambe (trend / range) perd :
+    chaque trade porte le régime qui l'a ouvert, et per_regime les agrège."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    result = _make_backtester(cfg).run(portfolio_data)
+
+    assert result["num_trades"] > 0
+    for t in result["trades"]:
+        assert t["regime"] in ("trend", "range")
+    assert set(result["per_regime"]) <= {"trend", "range"}
+    assert sum(v["num_trades"] for v in result["per_regime"].values()) == result["num_trades"]
+    assert abs(sum(v["pnl"] for v in result["per_regime"].values()) - sum(t["pnl"] for t in result["trades"])) < 1e-6
+
+
 def test_total_drawdown_breaker_never_unblocks_once_tripped(portfolio_data):
     with open("config.yaml") as f:
         cfg = yaml.safe_load(f)

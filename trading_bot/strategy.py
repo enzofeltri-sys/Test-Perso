@@ -137,12 +137,22 @@ class RegimeSwitchingStrategy:
     """
 
     def __init__(self, trend_strategy, range_strategy, adx_period: int = 14, adx_trend_threshold: float = 25.0,
-                 regime_confirm_bars: int = 3):
+                 regime_confirm_bars: int = 3, market_filter_ema: int = None):
+        """
+        market_filter_ema : filtre de marché long terme, optionnel (None =
+        désactivé). Quand il est actif, AUCUNE entrée (ni tendance, ni
+        retournement) n'est prise tant que le prix est sous son EMA de
+        `market_filter_ema` bougies. Rationnel : le bot est long-only ; sur
+        une phase baissière prolongée, la meilleure position est de ne pas
+        en avoir — les entrées "contre le courant de fond" sont celles qui
+        finissent le plus souvent sur un stop.
+        """
         self.trend_strategy = trend_strategy
         self.range_strategy = range_strategy
         self.adx_period = adx_period
         self.adx_trend_threshold = adx_trend_threshold
         self.regime_confirm_bars = regime_confirm_bars
+        self.market_filter_ema = market_filter_ema
         self._active = None  # 'trend' ou 'range', tant qu'une position est ouverte
         self._pending_active = None  # candidat proposé par should_enter(), pas encore confirmé
 
@@ -159,6 +169,17 @@ class RegimeSwitchingStrategy:
         # hystérésis : le régime effectif ne bascule qu'après confirmation
         # sur `regime_confirm_bars` bougies consécutives (voir regime.py)
         df["regime"] = rg.debounce_regime(raw_regime, self.regime_confirm_bars).values
+
+        if self.market_filter_ema:
+            # EMA "tolérante au démarrage" (adjust=True, pas de min_periods) :
+            # une EMA longue avec min_periods=span mettrait NaN — donc
+            # supprimerait — les `span` premières bougies de chaque fenêtre
+            # de backtest/walk-forward et de chaque cycle live. Ici les
+            # premières valeurs sont juste la moyenne pondérée de l'historique
+            # disponible : moins fiables au tout début, jamais absentes.
+            market_ema = df["close"].ewm(span=self.market_filter_ema, adjust=True, min_periods=1).mean()
+            df["market_ema"] = market_ema
+            df["market_ok"] = df["close"] > market_ema
         return df
 
     def should_enter(self, row) -> bool:
@@ -171,6 +192,8 @@ class RegimeSwitchingStrategy:
         symbole — et donc fausser `active_regime` / `should_exit_on_signal`."""
         regime = row["regime"]
         if pd.isna(regime):
+            return False
+        if self.market_filter_ema and not row["market_ok"]:
             return False
         if regime == "trending":
             if self.trend_strategy.should_enter(row):
@@ -236,6 +259,7 @@ def regime_strategy_from_config(strategy_cfg: dict) -> RegimeSwitchingStrategy:
     trend_strategy = strategy_from_config(strategy_cfg["trend"])
     range_strategy = mean_reversion_from_config(strategy_cfg["mean_reversion"])
     regime_cfg = strategy_cfg["regime"]
+    market_cfg = strategy_cfg.get("market_filter") or {}
 
     return RegimeSwitchingStrategy(
         trend_strategy=trend_strategy,
@@ -243,4 +267,5 @@ def regime_strategy_from_config(strategy_cfg: dict) -> RegimeSwitchingStrategy:
         adx_period=regime_cfg["adx_period"],
         adx_trend_threshold=regime_cfg["adx_trend_threshold"],
         regime_confirm_bars=regime_cfg.get("regime_confirm_bars", 3),
+        market_filter_ema=market_cfg.get("ema_period"),
     )

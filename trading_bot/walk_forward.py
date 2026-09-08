@@ -157,6 +157,7 @@ def walk_forward_analysis(market_data: dict, base_strategy_cfg: dict, param_grid
             "test_profit_factor": test_res["profit_factor"],
             "test_exit_reasons": test_res["exit_reasons"],
             "test_per_symbol": test_res["per_symbol"],
+            "test_per_regime": test_res["per_regime"],
         })
 
         window_start += step_delta
@@ -225,6 +226,10 @@ def summarize_windows(windows: list) -> list:
             "per_symbol_pnl": {
                 s: round(float(v["pnl"]), 2) for s, v in (w.get("test_per_symbol") or {}).items()
             },
+            "per_regime": {
+                r: {"num_trades": int(v["num_trades"]), "pnl": round(float(v["pnl"]), 2)}
+                for r, v in (w.get("test_per_regime") or {}).items()
+            },
         })
     return out
 
@@ -238,6 +243,7 @@ def print_windows(windows: list) -> None:
         pf = "inf" if w["profit_factor"] is None else f"{w['profit_factor']:.2f}"
         reasons = ", ".join(f"{k}={v}" for k, v in sorted(w["exit_reasons"].items())) or "aucun trade"
         per_sym = ", ".join(f"{s}={v:+.2f}" for s, v in w["per_symbol_pnl"].items())
+        per_reg = ", ".join(f"{r}={v['pnl']:+.2f} ({v['num_trades']} trades)" for r, v in w["per_regime"].items())
         print(f"  [{i:>2}] {w['test_start']} -> {w['test_end']}  "
               f"rendement {w['return_pct']:+7.2f}%  (buy&hold {w['buy_and_hold_pct']:+7.2f}%)  "
               f"trades={w['num_trades']:>3}  gain={w['win_rate_pct']:5.1f}%  PF={pf}  "
@@ -245,3 +251,5 @@ def print_windows(windows: list) -> None:
         print(f"        params={w['chosen_params']}  sorties: {reasons}")
         if per_sym:
             print(f"        par paire: {per_sym}")
+        if per_reg:
+            print(f"        par sous-stratégie: {per_reg}")
