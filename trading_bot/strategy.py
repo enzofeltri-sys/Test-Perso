@@ -49,7 +49,12 @@ class StrategyParams:
     atr_multiplier_stop: float = 2.0
     reward_risk_ratio: float = 2.0
     min_score_to_enter: int = 2      # sur un score qui va de -2 à +3
-    exit_score_threshold: int = 0    # sort si le score retombe à ce niveau ou en dessous
+    # sort si le score retombe à ce niveau ou en dessous ; None = jamais de
+    # sortie sur signal, seuls le stop et l'objectif ferment la position.
+    # Sur bougies 1h, le score bascule à chaque croisement MACD contraire :
+    # la sortie sur signal coupait les gagnants bien avant l'objectif
+    # (51% des sorties, taux de gain 31%) — voir README, "Ce qu'on a observé".
+    exit_score_threshold: int = None
 
 
 class MultiSignalStrategy:
@@ -101,6 +106,8 @@ class MultiSignalStrategy:
         return (row["score"] >= p.min_score_to_enter) and (row["rsi"] < p.rsi_veto_overbought)
 
     def should_exit_on_signal(self, row) -> bool:
+        if self.p.exit_score_threshold is None:
+            return False
         return row["score"] <= self.p.exit_score_threshold
 
     def on_position_closed(self):
@@ -246,7 +253,7 @@ def strategy_from_config(strat_cfg: dict) -> MultiSignalStrategy:
         atr_multiplier_stop=strat_cfg["atr_multiplier_stop"],
         reward_risk_ratio=strat_cfg["reward_risk_ratio"],
         min_score_to_enter=strat_cfg["min_score_to_enter"],
-        exit_score_threshold=strat_cfg["exit_score_threshold"],
+        exit_score_threshold=strat_cfg.get("exit_score_threshold"),
     )
     return MultiSignalStrategy(params)
 

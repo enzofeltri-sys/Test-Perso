@@ -51,6 +51,16 @@ portfolio:
 # est sans direction claire. Voir README pour le détail.
 # ---------------------------------------------------------------
 strategy:
+  # Filtre de marché long terme : AUCUNE entrée (tendance ou retournement)
+  # tant que le prix est sous son EMA de `ema_period` bougies. Le bot est
+  # long-only : en phase baissière prolongée, la meilleure position est de
+  # ne pas en avoir. Sur un an de vraies données (walk-forward, 9 fenêtres
+  # hors-échantillon, buy & hold -25%), ce filtre a réduit la perte de -35%
+  # à -20/-23% et le pire drawdown de -13% à -6/-8%, quelle que soit la
+  # longueur testée (150 à 720). Mettre `ema_period: null` pour désactiver.
+  market_filter:
+    ema_period: 200            # ~8 jours en bougies 1h
+
   regime:
     adx_period: 14
     adx_trend_threshold: 25    # ADX > seuil -> "trending", sinon -> "ranging"
@@ -70,7 +80,14 @@ strategy:
     atr_multiplier_stop: 2.0
     reward_risk_ratio: 2.0
     min_score_to_enter: 2      # score min pour entrer (score va de -2 à +3)
-    exit_score_threshold: 0    # sort si le score retombe à ce niveau ou en dessous
+    # Sortie sur signal : sort si le score retombe à ce niveau ou en dessous.
+    # `null` = jamais, seuls le stop et l'objectif ferment la position. Sur
+    # bougies 1h, le score bascule à chaque croisement MACD contraire : avec
+    # 0, la sortie sur signal représentait 51% des sorties et coupait les
+    # gagnants bien avant l'objectif (taux de gain 31%). Sans elle, avec le
+    # filtre de marché : 39% de gain, ~2x moins de trades, résultat
+    # hors-échantillon proche de zéro (-1%) au lieu de -35%.
+    exit_score_threshold: null
 
   mean_reversion:
     bb_period: 20
@@ -123,7 +140,10 @@ monte_carlo:
 paper_trading:
   initial_balance: 1000
   poll_interval_seconds: 60     # fréquence de vérification du marché
-  lookback_candles: 200         # nb de bougies récupérées à chaque cycle (doit couvrir les indicateurs les plus lents)
+  # nb de bougies récupérées à chaque cycle : doit couvrir LARGEMENT
+  # l'indicateur le plus lent (l'EMA 200 du filtre de marché — avec
+  # seulement 200 bougies, sa valeur ne serait qu'une approximation)
+  lookback_candles: 500
   log_file: logs/paper_trades.csv
 
 # ---------------------------------------------------------------

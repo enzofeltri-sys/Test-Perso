@@ -17,7 +17,7 @@ def test_should_enter_does_not_commit_active_regime_before_confirmation():
     laisser active_regime pointer sur un régime alors qu'aucune position
     n'était réellement ouverte."""
     strat = _load_strategy()
-    row = {"regime": "trending", "score": 5, "rsi": 10}
+    row = {"regime": "trending", "score": 5, "rsi": 10, "market_ok": True}
 
     assert strat.should_enter(row) is True
     assert strat.active_regime is None  # pas encore confirmé
@@ -26,7 +26,7 @@ def test_should_enter_does_not_commit_active_regime_before_confirmation():
 def test_compute_stop_and_target_confirms_active_regime():
     strat = _load_strategy()
     row = {
-        "regime": "trending", "score": 5, "rsi": 10,
+        "regime": "trending", "score": 5, "rsi": 10, "market_ok": True,
         "atr": 2.0, "high": 105, "low": 95, "close": 100,
     }
     assert strat.should_enter(row) is True
@@ -37,7 +37,7 @@ def test_compute_stop_and_target_confirms_active_regime():
 def test_on_position_closed_resets_active_regime():
     strat = _load_strategy()
     row = {
-        "regime": "trending", "score": 5, "rsi": 10,
+        "regime": "trending", "score": 5, "rsi": 10, "market_ok": True,
         "atr": 2.0, "high": 105, "low": 95, "close": 100,
     }
     strat.should_enter(row)
@@ -48,11 +48,36 @@ def test_on_position_closed_resets_active_regime():
     assert strat.active_regime is None
 
 
-def test_market_filter_is_off_by_default(ohlcv):
-    strat = _load_strategy()
+def test_market_filter_can_be_disabled(ohlcv):
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    cfg["strategy"].pop("market_filter", None)
+    strat = regime_strategy_from_config(cfg["strategy"])
     assert strat.market_filter_ema is None
     prepared = strat.prepare(ohlcv)
     assert "market_ok" not in prepared.columns
+
+    cfg["strategy"]["market_filter"] = {"ema_period": None}
+    assert regime_strategy_from_config(cfg["strategy"]).market_filter_ema is None
+
+
+def test_no_signal_exit_when_threshold_is_null():
+    """exit_score_threshold: null = seuls le stop et l'objectif ferment la
+    position ; un score très négatif ne doit jamais déclencher de sortie."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    cfg["strategy"]["trend"]["exit_score_threshold"] = None
+    strat = regime_strategy_from_config(cfg["strategy"])
+    row = {"regime": "trending", "score": 5, "rsi": 10, "atr": 2.0, "close": 100, "market_ok": True}
+    assert strat.should_enter(row) is True
+    strat.compute_stop_and_target(100.0, row)
+    assert strat.should_exit_on_signal({"score": -2}) is False
+
+    cfg["strategy"]["trend"]["exit_score_threshold"] = 0
+    strat = regime_strategy_from_config(cfg["strategy"])
+    strat.should_enter(row)
+    strat.compute_stop_and_target(100.0, row)
+    assert strat.should_exit_on_signal({"score": -2}) is True
 
 
 def test_market_filter_blocks_every_entry_below_long_ema():

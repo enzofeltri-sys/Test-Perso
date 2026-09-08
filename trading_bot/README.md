@@ -74,6 +74,22 @@ Une fois une position ouverte, c'est toujours la même sous-stratégie qui
 gère sa sortie (stop, target, signal), même si le régime change en cours
 de route — voir `RegimeSwitchingStrategy` dans `strategy.py`.
 
+**Filtre de marché long terme** (`strategy.market_filter.ema_period`,
+200 bougies par défaut) : aucune entrée, ni tendance ni retournement,
+tant que le prix est sous son EMA 200. Le bot est long-only : en phase
+baissière prolongée, la meilleure position est de ne pas en avoir. Ce
+filtre est né du diagnostic sur vraies données décrit plus bas — c'est
+le seul changement dont l'effet a été dans le même sens quelle que soit
+la longueur d'EMA testée (150 à 720 bougies). `null` pour le désactiver.
+
+**Pas de sortie sur signal pour la jambe de tendance**
+(`strategy.trend.exit_score_threshold: null`) : seuls le stop et
+l'objectif ferment une position de tendance. Sur bougies 1h, le score
+bascule à chaque croisement MACD contraire, et la sortie sur signal
+coupait les gagnants bien avant l'objectif (même diagnostic). Remettre
+un entier (ex. `0`) pour réactiver la sortie dès que le score retombe à
+ce niveau.
+
 **Hystérésis de régime** : l'ADX oscille souvent juste autour du seuil
 (25) pendant plusieurs bougies d'affilée, ce qui ferait basculer la
 stratégie active pour rien. Le régime effectif ne bascule donc qu'après
@@ -168,6 +184,58 @@ de finir en perte selon Monte Carlo — les deux chiffres à regarder en
 premier, avant le rendement total qui peut facilement induire en erreur.
 
 ## Ce qu'on a observé en le testant
+
+### Sur un an de vraies données (walk-forward, septembre 2026)
+
+Historique 1h BTC/ETH/SOL sur 365 jours (OKX, via `export_history.py`),
+walk-forward 90 jours d'entraînement / 30 de test, 9 fenêtres
+hors-échantillon, frais 0,1 % + glissement 0,05 % par exécution, tous les
+garde-fous actifs. Buy & hold équipondéré sur ces 9 fenêtres : **−25 %**
+(année baissière).
+
+**Diagnostic de la stratégie d'origine** (sortie sur signal à 0, pas de
+filtre de marché) : **−35 %** composé, 1 fenêtre positive sur 9,
+215 trades, 31 % de trades gagnants. Ce n'était pas seulement le marché :
+la stratégie perdait aussi dans les fenêtres où le buy & hold faisait
++13 % ou +33 %. Les deux mécanismes en cause, lisibles dans le détail par
+fenêtre (`python main.py validate` l'affiche maintenant, et
+`recalibrate.py` l'écrit dans le journal partagé) :
+
+- 51 % des sorties étaient des sorties sur signal, déclenchées par le
+  premier croisement MACD contraire sur bougies 1h — les gagnants étaient
+  coupés bien avant l'objectif, et chaque aller-retour coûtait 0,3 %.
+- Long-only en année baissière : les deux jambes (tendance et
+  retournement) prenaient des entrées contre le courant de fond, qui
+  finissaient sur un stop.
+
+**Variantes testées, toutes en walk-forward sur les mêmes 9 fenêtres**
+(sélection des paramètres en entraînement uniquement, comme en prod) :
+
+| Variante | OOS composé | fenêtres positives | trades | pire drawdown |
+|---|---|---|---|---|
+| origine (1h) | −34,9 % | 11 % | 215 | −13,1 % |
+| stop 3×ATR, ou objectif 3R, ou sortie signal à −1 | −30 à −33 % | 11–22 % | 166–208 | −12 à −14 % |
+| sans sortie sur signal | −25,6 % | 33 % | 180 | −12,8 % |
+| filtre de marché EMA 200 (ou 720) | −20 à −23 % | 11–22 % | 118–133 | −6 à −8 % |
+| bougies 4h (toutes variantes) | −3 à −15 % | 33–56 % | 36–66 | −6 à −8 % |
+| **filtre EMA 200 + sans sortie sur signal** (retenu) | **−1,3 %** | 33 % | 98 | **−5,8 %** |
+| idem, EMA 150 / 300 / 400 | −7 à −10 % | 33–44 % | 91–108 | −7 à −9 % |
+| idem + stop 3×ATR, ou objectif 3R | +0,6 % / +0,1 % | 44–56 % | 72–80 | −7 % |
+
+Lecture honnête : **aucune variante n'a d'avantage positif** sur cette
+année. La configuration retenue perd ~35 points de moins que l'origine
+et divise le pire drawdown par deux, avec un effet dont le *sens* est le
+même pour toutes les longueurs de filtre et sur les deux timeframes ;
+mais ses voisines (EMA 150/300/400, objectif 1,5R) retombent à −7/−14 %,
+et les +0,6 % de `stop 3×ATR` sont dans le bruit de quelques trades.
+C'est un plateau autour de zéro, pas un edge. Le bot reste donc en paper
+trading, et `recalibrate.py` continue de refuser d'écrire quoi que ce
+soit tant que les fenêtres récentes ne sont pas positives — c'est
+exactement le cas prévu par ses garde-fous. Les données brutes de cette
+analyse sont sur la branche `history-cache` (voir `export_history.py`)
+pour que n'importe qui puisse rejouer ces comparaisons.
+
+### Sur des données synthétiques (avant l'accès aux vraies données)
 
 Sur des données synthétiques (marché aléatoire avec un léger cycle,
 générées pour vérifier que le code fonctionne, PAS de vraies données de
