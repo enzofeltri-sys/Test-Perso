@@ -30,12 +30,16 @@ def load_config(path: str) -> dict:
 def _fetch_portfolio_history(cfg: dict) -> dict:
     ex_cfg = cfg["exchange"]
     bt_cfg = cfg["backtest"]
-    exchange = data.get_exchange(ex_cfg["id"])
+    # exchange.history_exchange_id (si présent) sert UNIQUEMENT à l'historique
+    # profond (backtest/validate/recalibrate.py) — l'exchange live (exchange.id,
+    # web_app.py/paper_trader.py) n'est pas concerné. Voir config.yaml.
+    exchange_id = ex_cfg.get("history_exchange_id") or ex_cfg["id"]
+    exchange = data.get_exchange(exchange_id)
 
     result = {}
     for symbol in cfg["portfolio"]["symbols"]:
         print(f"Téléchargement de l'historique {symbol} ({ex_cfg['timeframe']}) "
-              f"sur {bt_cfg['since_days']} jours depuis {ex_cfg['id']}...")
+              f"sur {bt_cfg['since_days']} jours depuis {exchange_id}...")
         df = data.fetch_ohlcv_history(exchange, symbol, ex_cfg["timeframe"], bt_cfg["since_days"])
         print(f"  -> {len(df)} bougies ({df.index[0]} -> {df.index[-1]})")
         result[symbol] = df

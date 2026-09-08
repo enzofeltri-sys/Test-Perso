@@ -8,12 +8,21 @@
 mode: paper
 
 exchange:
-  # identifiant ccxt de l'exchange (données publiques, pas besoin de clé API).
+  # identifiant ccxt de l'exchange EN DIRECT (paper trading, web_app.py).
   # binance.com renvoie 451 "restricted location" depuis les IP hébergées aux
   # USA (Render free tier = Oregon) — kucoin n'a pas ce blocage géographique.
   # Si jamais kucoin bloque aussi depuis ton hébergeur, autres candidats à
   # essayer (mêmes symboles BTC/ETH/SOL en USDT) : bybit, okx, kraken.
   id: kucoin
+  # exchange utilisé UNIQUEMENT pour l'historique profond du walk-forward
+  # et de recalibrate.py (main.py backtest/validate, recalibrate.py) —
+  # kucoin plafonne son historique 1h public à ~83 jours (~2000 bougies)
+  # quel que soit since_days demandé, insuffisant pour train_days+test_days
+  # (vérifié empiriquement). binance a un historique bien plus profond et,
+  # contrairement au service web sur Render, n'est PAS bloqué depuis les
+  # runners GitHub Actions (vérifié aussi) — recalibrate.py n'y tourne
+  # jamais, donc le blocage géographique de Render ne le concerne pas.
+  history_exchange_id: binance
   timeframe: 1h         # bougie: 1m, 5m, 15m, 1h, 4h, 1d, ...
 
 # ---------------------------------------------------------------

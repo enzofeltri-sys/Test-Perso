@@ -258,6 +258,14 @@ tick suivant. Ne touche jamais aux paramètres de RISQUE (ceux-là restent
 sous contrôle humain exclusif via `tradingbot_config`) ni ne place
 d'ordre. N'écrit rien si les critères de robustesse ne sont pas remplis.
 
+L'historique profond nécessaire au walk-forward est téléchargé depuis
+`exchange.history_exchange_id` (`binance` par défaut, voir
+`config.yaml`) plutôt que `exchange.id` (`kucoin`, l'exchange EN DIRECT
+de `web_app.py`) : kucoin plafonne son historique 1h public à ~83 jours
+quel que soit `since_days` demandé, insuffisant pour
+`walk_forward.train_days + test_days` (vérifié empiriquement). `backtest`
+et `validate` utilisent le même mécanisme, pour la même raison.
+
 ## Passer au réel — à lire avant d'aller plus loin
 
 Ce projet s'arrête volontairement avant l'envoi d'ordres réels.
