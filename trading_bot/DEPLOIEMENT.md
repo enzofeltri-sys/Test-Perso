@@ -89,10 +89,23 @@ create table if not exists public.tradingbot_config (
 insert into public.tradingbot_config (id) values ('default')
   on conflict (id) do nothing;
 
+-- optionnelle : journal partagé bot <-> manager (humain ou Claude Cowork),
+-- voir section "Le bot explique ses décisions" plus bas. Le bot fonctionne
+-- très bien sans cette table (get_recent_journal()/log_journal_entry()
+-- sont best-effort).
+create table if not exists public.tradingbot_journal (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  author text not null check (author in ('bot', 'manager')),
+  message text not null,
+  data jsonb
+);
+
 alter table public.tradingbot_state enable row level security;
 alter table public.tradingbot_trades enable row level security;
 alter table public.tradingbot_errors enable row level security;
 alter table public.tradingbot_config enable row level security;
+alter table public.tradingbot_journal enable row level security;
 
 create policy "tradingbot_state_all" on public.tradingbot_state
   for all to anon, authenticated using (true) with check (true);
@@ -101,6 +114,8 @@ create policy "tradingbot_trades_all" on public.tradingbot_trades
 create policy "tradingbot_errors_all" on public.tradingbot_errors
   for all to anon, authenticated using (true) with check (true);
 create policy "tradingbot_config_all" on public.tradingbot_config
+  for all to anon, authenticated using (true) with check (true);
+create policy "tradingbot_journal_all" on public.tradingbot_journal
   for all to anon, authenticated using (true) with check (true);
 ```
 
@@ -198,6 +213,23 @@ alter table public.tradingbot_config
   add column if not exists strategy_overrides jsonb;
 ```
 
+⚠️ **Migration pour `tradingbot_journal`** (voir section "Le bot explique
+ses décisions" plus bas) — table entièrement nouvelle, à créer une fois
+si elle n'existe pas déjà :
+
+```sql
+create table if not exists public.tradingbot_journal (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  author text not null check (author in ('bot', 'manager')),
+  message text not null,
+  data jsonb
+);
+alter table public.tradingbot_journal enable row level security;
+create policy "tradingbot_journal_all" on public.tradingbot_journal
+  for all to anon, authenticated using (true) with check (true);
+```
+
 ## 3ter. Recalibrage mensuel automatique — `recalibrate.py`
 
 Un second script, indépendant de `web_app.py`, revalide périodiquement
@@ -241,6 +273,39 @@ repo — il ne reste que les secrets à configurer :
 4. Résultat visible dans les logs du run (Actions → le run en question)
    et, si un recalibrage a été appliqué, dans
    `tradingbot_config.strategy_overrides` sur Supabase.
+
+## 3quater. Le bot explique ses décisions — `tradingbot_journal`
+
+Deux canaux distincts, à ne pas confondre :
+
+- **`tradingbot_config`** = le PILOTAGE réel du bot. Colonnes typées
+  (risque, `active_symbols`, `strategy_overrides`) — c'est le seul canal
+  qui change effectivement le comportement du bot. Voir section 3bis.
+- **`tradingbot_journal`** = la VISIBILITÉ/discussion. Texte libre, sans
+  aucun pouvoir sur le bot — juste un journal partagé, lisible depuis
+  Supabase (mobile inclus) ou sur la page de statut (`/`, section
+  « Journal »).
+
+À chaque exécution, `recalibrate.py` y écrit une entrée (`author='bot'`)
+expliquant ce qu'il a fait et pourquoi : combien de fenêtres
+hors-échantillon trouvées, le rendement composé récent, si c'était
+robuste, et s'il a recalibré ou non (avec les nouveaux paramètres le cas
+échéant). C'est la même donnée que celle affichée dans les logs GitHub
+Actions, mais persistée et lisible sans creuser dans les logs.
+
+Le **manager** — toi, ou Claude Cowork avec les mêmes accès Supabase —
+peut y répondre en écrivant ses propres entrées (`author='manager'`),
+par exemple pour valider une décision, en expliquer une autre, ou
+annoncer un changement à venir :
+
+```sql
+insert into public.tradingbot_journal (author, message)
+values ('manager', 'Vu le recalibrage de ce mois — je laisse tel quel, RAS.');
+```
+
+Pour effectivement CADRER le bot (pas juste commenter), c'est
+`tradingbot_config` qu'il faut modifier (section 3bis) — le journal ne
+fait qu'expliquer et discuter, il ne pilote rien.
 
 ## 4. Vérifier que ça tourne
 

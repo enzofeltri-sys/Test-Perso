@@ -60,6 +60,9 @@ class FakeDB:
     def get_recent_errors(self, limit=5):
         return []
 
+    def get_recent_journal(self, limit=10):
+        return []
+
 
 class Clock:
     def __init__(self, idx):
@@ -323,3 +326,51 @@ def test_run_tick_never_opens_new_positions_on_symbols_deactivated_by_override(m
                 assert symbol == active_symbol, (
                     f"{symbol} a une position ouverte alors qu'il est désactivé par active_symbols"
                 )
+
+
+def test_status_page_renders_journal_entries(monkeypatch):
+    fake_db = FakeDB()
+    fake_db.get_recent_journal = lambda limit=10: [
+        {"ts": "2026-09-08T22:34:15+00:00", "author": "bot",
+         "message": "Recalibrage : pas assez robuste pour agir."},
+        {"ts": "2026-09-07T10:00:00+00:00", "author": "manager",
+         "message": "Vu, on laisse tourner."},
+    ]
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    client = web_app.app.test_client()
+    resp = client.get("/")
+    html = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Recalibrage : pas assez robuste pour agir." in html
+    assert "Vu, on laisse tourner." in html
+    assert "manager" in html
+
+
+def test_status_page_shows_empty_state_when_no_journal(monkeypatch):
+    fake_db = FakeDB()  # get_recent_journal -> []
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    client = web_app.app.test_client()
+    html = client.get("/").get_data(as_text=True)
+
+    assert "Aucune entrée pour l'instant." in html
+
+
+def test_status_page_survives_journal_lookup_failure(monkeypatch):
+    fake_db = FakeDB()
+
+    def _boom(limit=10):
+        raise RuntimeError("table absente")
+
+    fake_db.get_recent_journal = _boom
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    client = web_app.app.test_client()
+    resp = client.get("/")
+
+    # get_recent_journal() réel est best-effort (voir supabase_state.py) —
+    # mais si jamais il lève, la page de statut entière ne doit pas planter
+    # pour autant : repli sur le texte brut, toujours 200.
+    assert resp.status_code == 200

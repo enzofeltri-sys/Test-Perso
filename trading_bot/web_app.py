@@ -173,6 +173,23 @@ STATUS_PAGE = """<!doctype html>
     {% endif %}
   </section>
 
+  <section>
+    <p class="label">Journal</p>
+    {% if journal %}
+      {% for j in journal %}
+      <div class="row">
+        <div>
+          <div class="detail">{{ j.ts }}</div>
+          <div class="name" style="font-size:0.82rem;font-weight:400;">{{ j.message }}</div>
+        </div>
+        <span class="side mono {{ 'buy' if j.author == 'manager' else '' }}">{{ j.author }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">Aucune entrée pour l'instant.</p>
+    {% endif %}
+  </section>
+
   {% if errors %}
   <section>
     <p class="label">Dernières erreurs</p>
@@ -508,6 +525,7 @@ def health():
         state = db.load_state(initial_balance=pt_cfg["initial_balance"])
         trades = db.get_recent_trades(limit=8)
         errors = db.get_recent_errors(limit=5)
+        journal = db.get_recent_journal(limit=8)
         # load_config_overrides() est déjà best-effort ({} si Supabase
         # est injoignable ou si la table n'existe pas) — voir supabase_state.py.
         strategy_overrides = db.load_config_overrides().get("strategy_overrides") or {}
@@ -521,6 +539,9 @@ def health():
             "price": t.get("price"), "qty": t.get("qty"), "reason": t.get("reason"),
         } for t in trades]
         errors_view = [{"ts": _fmt_ts(e.get("ts")), "message": e.get("message")} for e in errors]
+        journal_view = [{
+            "ts": _fmt_ts(j.get("ts")), "author": j.get("author"), "message": j.get("message"),
+        } for j in journal]
 
         return render_template_string(
             STATUS_PAGE,
@@ -528,7 +549,7 @@ def health():
             daily_tripped=daily_tripped, total_tripped=total_tripped,
             cash=state["cash"], positions=positions,
             symbols=cfg["portfolio"]["symbols"],
-            trades=trades_view, errors=errors_view,
+            trades=trades_view, errors=errors_view, journal=journal_view,
             strategy_overrides=strategy_overrides,
         ), 200
     except Exception:

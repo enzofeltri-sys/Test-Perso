@@ -132,6 +132,43 @@ def get_recent_errors(limit: int = 5) -> list:
     return resp.json()
 
 
+def log_journal_entry(author: str, message: str, data: dict = None) -> None:
+    """Ajoute une entrée au journal partagé (tradingbot_journal) — c'est
+    là que le bot EXPLIQUE ses décisions (recalibrate.py notamment : quoi,
+    pourquoi, avec quelles preuves), et là où le "manager" (toi, ou Claude
+    Cowork) peut répondre en écrivant ses propres entrées
+    (author='manager'). Ce canal ne pilote JAMAIS directement le bot —
+    le pilotage réel reste tradingbot_config (structuré, pas du texte
+    libre) ; ceci est uniquement la couche de visibilité/discussion.
+    Best-effort : un souci ici ne doit jamais faire planter un cycle."""
+    try:
+        url = f"{_base_url()}/tradingbot_journal"
+        payload = {"author": author, "message": message}
+        if data is not None:
+            payload["data"] = data
+        resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
+        resp.raise_for_status()
+    except Exception:
+        pass
+
+
+def get_recent_journal(limit: int = 10) -> list:
+    """Les dernières entrées du journal, du plus récent au plus ancien.
+    Best-effort ([] si la table n'existe pas encore — voir DEPLOIEMENT.md
+    pour la migration) : optionnelle, ne doit jamais faire échouer la page
+    de statut ni un cycle."""
+    try:
+        url = f"{_base_url()}/tradingbot_journal"
+        resp = requests.get(
+            url, headers=_headers(),
+            params={"select": "*", "order": "ts.desc", "limit": str(limit)}, timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return []
+
+
 def load_config_overrides() -> dict:
     """Réglages ajustables à la volée (sans redéployer), posés dans la
     table tradingbot_config — voir DEPLOIEMENT.md, section 'Ajuster le

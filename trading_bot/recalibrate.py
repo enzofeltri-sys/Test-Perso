@@ -133,9 +133,15 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
     )
 
     if not windows:
-        result = {"applied": False, "reason": "pas assez d'historique pour au moins une fenêtre train/test complète"}
-        print(result["reason"])
-        return result
+        reason = "pas assez d'historique pour au moins une fenêtre train/test complète"
+        print(reason)
+        if not dry_run:
+            db.log_journal_entry(
+                "bot",
+                f"Recalibrage : {reason} — rien à évaluer, aucun changement.",
+                data={"applied": False, "num_windows": 0},
+            )
+        return {"applied": False, "reason": reason}
 
     print(f"{len(windows)} fenêtre(s) hors-échantillon au total.")
     verdict = evaluate_robustness(windows)
@@ -144,10 +150,22 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
               f"rendement composé = {verdict['compounded_oos_return_pct']:.2f}%  "
               f"| % positives = {verdict['pct_windows_positive']:.0f}%")
 
+    # "recent_windows" contient des Timestamps pandas, pas sérialisables tels
+    # quels en JSON — jamais inclus dans ce qui part vers le journal/Supabase.
+    verdict_summary = {k: v for k, v in verdict.items() if k != "recent_windows"}
+
     if not verdict["robust"]:
-        result = {"applied": False, "reason": verdict["reason"]}
         print(f"Pas assez robuste pour recalibrer : {verdict['reason']} — aucun changement écrit.")
-        return result
+        if not dry_run:
+            db.log_journal_entry(
+                "bot",
+                f"Recalibrage : pas assez robuste pour agir ({verdict['reason']}). "
+                f"{len(windows)} fenêtres walk-forward au total, "
+                f"{len(verdict['recent_windows'])} récentes examinées. Aucun changement — "
+                "le bot continue avec les derniers paramètres en place.",
+                data={"applied": False, "num_windows": len(windows), **verdict_summary},
+            )
+        return {"applied": False, "reason": verdict["reason"]}
 
     candidate_params = windows[-1]["chosen_params"]
     print(f"Robuste — nouveaux paramètres candidats (fenêtre la plus récente) : {candidate_params}")
@@ -167,6 +185,14 @@ def run(cfg: dict, dry_run: bool = False) -> dict:
             f"{verdict['compounded_oos_return_pct']:.2f}% sur {len(verdict['recent_windows'])} fenêtres")
     db.save_strategy_overrides(candidate_params, note=note)
     print("Écrit dans tradingbot_config.strategy_overrides.")
+    db.log_journal_entry(
+        "bot",
+        f"Recalibrage appliqué : nouveaux paramètres de stratégie {candidate_params}, validés sur "
+        f"{len(verdict['recent_windows'])} fenêtres récentes robustes (rendement composé "
+        f"{verdict['compounded_oos_return_pct']:.2f}%, {verdict['pct_windows_positive']:.0f}% positives). "
+        "Écrit dans tradingbot_config.strategy_overrides.",
+        data={"applied": True, "candidate_params": candidate_params, "num_windows": len(windows), **verdict_summary},
+    )
     return {**verdict, "applied": True, "candidate_params": candidate_params}
 
 
@@ -186,6 +212,12 @@ def main():
             db.log_error(f"Erreur non gérée dans recalibrate.py : {e}")
         except Exception:
             pass
+        if not args.dry_run:
+            db.log_journal_entry(
+                "bot",
+                f"Recalibrage : échec inattendu ({e}) — voir tradingbot_errors pour la trace complète. "
+                "Aucun changement appliqué.",
+            )
         print(f"ERREUR : {e}", file=sys.stderr)
         sys.exit(1)
 

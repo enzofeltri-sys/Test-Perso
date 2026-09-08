@@ -6,6 +6,9 @@ l'orchestration (run), et vérifient que run() n'écrit dans Supabase que
 quand evaluate_robustness dit oui.
 """
 
+import sys
+
+import pytest
 import yaml
 
 import main as main_module
@@ -75,12 +78,16 @@ class FakeDB:
     def __init__(self):
         self.saved = None
         self.errors = []
+        self.journal = []
 
     def save_strategy_overrides(self, strategy_overrides, note=None):
         self.saved = {"strategy_overrides": strategy_overrides, "note": note}
 
     def log_error(self, message):
         self.errors.append(message)
+
+    def log_journal_entry(self, author, message, data=None):
+        self.journal.append({"author": author, "message": message, "data": data})
 
 
 def test_run_writes_strategy_overrides_when_robust(monkeypatch, portfolio_data):
@@ -99,6 +106,10 @@ def test_run_writes_strategy_overrides_when_robust(monkeypatch, portfolio_data):
     assert fake_db.saved is not None
     assert fake_db.saved["strategy_overrides"] == {"trend.min_score_to_enter": 3}
     assert "recalibrage auto" in fake_db.saved["note"]
+    assert len(fake_db.journal) == 1
+    assert fake_db.journal[0]["author"] == "bot"
+    assert "appliqué" in fake_db.journal[0]["message"]
+    assert fake_db.journal[0]["data"]["applied"] is True
 
 
 def test_run_writes_nothing_when_not_robust(monkeypatch, portfolio_data):
@@ -115,6 +126,9 @@ def test_run_writes_nothing_when_not_robust(monkeypatch, portfolio_data):
 
     assert result["applied"] is False
     assert fake_db.saved is None
+    assert len(fake_db.journal) == 1
+    assert fake_db.journal[0]["author"] == "bot"
+    assert "pas assez robuste" in fake_db.journal[0]["message"].lower()
 
 
 def test_run_dry_run_never_writes_even_when_robust(monkeypatch, portfolio_data):
@@ -132,6 +146,7 @@ def test_run_dry_run_never_writes_even_when_robust(monkeypatch, portfolio_data):
     assert result["applied"] is False
     assert result["reason"] == "dry-run"
     assert fake_db.saved is None
+    assert fake_db.journal == [], "--dry-run ne doit rien écrire, y compris dans le journal"
 
 
 def test_run_writes_nothing_when_no_windows_at_all(monkeypatch, portfolio_data):
@@ -147,3 +162,26 @@ def test_run_writes_nothing_when_no_windows_at_all(monkeypatch, portfolio_data):
 
     assert result["applied"] is False
     assert fake_db.saved is None
+    assert len(fake_db.journal) == 1
+    assert fake_db.journal[0]["author"] == "bot"
+
+
+def test_main_journals_unexpected_failures(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("exchange:\n  id: kucoin\n")  # minimal, jamais lu jusqu'au bout
+
+    def _boom(cfg, dry_run=False):
+        raise RuntimeError("panne réseau simulée")
+
+    fake_db = FakeDB()
+    monkeypatch.setattr(recalibrate, "run", _boom)
+    monkeypatch.setattr(recalibrate, "db", fake_db)
+    monkeypatch.setattr(sys, "argv", ["recalibrate.py", "--config", str(config_path)])
+
+    with pytest.raises(SystemExit):
+        recalibrate.main()
+
+    assert len(fake_db.errors) == 1
+    assert len(fake_db.journal) == 1
+    assert fake_db.journal[0]["author"] == "bot"
+    assert "échec" in fake_db.journal[0]["message"].lower()
