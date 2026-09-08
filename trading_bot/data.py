@@ -22,7 +22,7 @@ def get_exchange(exchange_id: str):
 def fetch_ohlcv_history(exchange, symbol: str, timeframe: str, since_days: int) -> pd.DataFrame:
     """
     Télécharge l'historique OHLCV en paginant (ccxt limite généralement
-    à ~500-1000 bougies par appel).
+    à ~300-1000 bougies par appel selon l'exchange).
 
     Retourne un DataFrame indexé par timestamp avec les colonnes:
     open, high, low, close, volume
@@ -34,8 +34,15 @@ def fetch_ohlcv_history(exchange, symbol: str, timeframe: str, since_days: int) 
     limit = 1000
 
     while True:
+        now = exchange.milliseconds()
+        if since >= now:
+            break
+
         candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
         if not candles:
+            # aucune donnée à partir de `since` : soit l'historique de
+            # l'exchange s'arrête réellement là, soit on a rattrapé le
+            # présent — dans les deux cas il n'y a plus rien à paginer
             break
         all_candles += candles
         last_ts = candles[-1][0]
@@ -44,8 +51,11 @@ def fetch_ohlcv_history(exchange, symbol: str, timeframe: str, since_days: int) 
         if next_since <= since:
             break
         since = next_since
-        if len(candles) < limit:
-            break
+        # NE PAS s'arrêter juste parce qu'un appel a rendu moins que `limit` —
+        # certains exchanges (ex: OKX) plafonnent nativement bien en dessous de
+        # 1000 bougies par appel sans que ça signifie "fin de l'historique". Le
+        # seul signal fiable est : plus de bougies du tout, ou `since` a
+        # rattrapé le présent (vérifié en haut de boucle).
         time.sleep(exchange.rateLimit / 1000)
 
     if not all_candles:

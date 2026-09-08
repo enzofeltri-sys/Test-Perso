@@ -20,12 +20,14 @@ exchange:
   # quel que soit since_days demandé, insuffisant pour train_days+test_days
   # (vérifié empiriquement).
   # binance a un historique bien plus profond MAIS bloque aussi (451
-  # "restricted location") une partie du pool d'IP GitHub Actions — vu de
-  # façon inconsistante d'un run à l'autre (fonctionne parfois, échoue
-  # parfois selon l'IP tirée), donc écarté malgré la profondeur d'historique
-  # : inacceptable pour un cron mensuel automatique qui doit être fiable.
-  # bybit a montré le même historique profond sans blocage observé.
-  history_exchange_id: bybit
+  # "restricted location") une partie du pool d'IP GitHub Actions, de façon
+  # inconsistante d'un run à l'autre — écarté, inacceptable pour un cron
+  # mensuel automatique qui doit être fiable. bybit bloque aussi (blocage
+  # géo CloudFront, cette fois systématique). okx a un historique profond
+  # (300 bougies/appel — voir le correctif de pagination dans data.py,
+  # ce plafond natif ne veut pas dire "fin de l'historique") et n'a montré
+  # aucun blocage.
+  history_exchange_id: okx
   timeframe: 1h         # bougie: 1m, 5m, 15m, 1h, 4h, 1d, ...
 
 # ---------------------------------------------------------------
