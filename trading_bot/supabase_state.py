@@ -132,11 +132,33 @@ def get_recent_errors(limit: int = 5) -> list:
     return resp.json()
 
 
+def load_config_overrides() -> dict:
+    """Réglages ajustables à la volée (sans redéployer), posés dans la
+    table tradingbot_config — voir DEPLOIEMENT.md, section 'Ajuster le
+    bot à la volée'. Une clé absente ou nulle veut dire "garde la valeur
+    de config.yaml". Best-effort : si Supabase est injoignable ou que la
+    table n'existe pas encore, on se rabat silencieusement sur
+    config.yaml plutôt que de faire planter le cycle."""
+    try:
+        url = f"{_base_url()}/tradingbot_config"
+        resp = requests.get(
+            url, headers=_headers(),
+            params={"id": "eq.default", "select": "*"}, timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0] if rows else {}
+    except Exception:
+        return {}
+
+
 def log_error(message: str) -> None:
     """Best-effort : un souci de logging ne doit jamais faire planter un
-    cycle de trading."""
-    url = f"{_base_url()}/tradingbot_errors"
+    cycle de trading, ni empêcher /tick de répondre correctement — donc
+    TOUT est dans le try, y compris la construction de l'URL/des headers
+    (qui échoue elle-même si SUPABASE_URL/SUPABASE_KEY manquent)."""
     try:
+        url = f"{_base_url()}/tradingbot_errors"
         resp = requests.post(url, headers=_headers(), json={"message": message[:4000]}, timeout=15)
         resp.raise_for_status()
     except Exception:

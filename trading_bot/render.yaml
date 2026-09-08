@@ -18,6 +18,13 @@ services:
     name: trading-bot-paper
     runtime: python
     plan: free
+    # frankfurt évite le blocage géo 451 de Binance sur les IP US du plan
+    # gratuit (voir DEPLOIEMENT.md) — le bot tourne maintenant sur KuCoin,
+    # qui ne bloque pas ces IP, mais Frankfurt reste le bon choix par
+    # défaut (latence plus faible vers Europe). Render ne permet pas de
+    # changer la région d'un service existant : ça ne s'applique qu'à un
+    # nouveau service créé depuis ce Blueprint.
+    region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 60
     envVars:

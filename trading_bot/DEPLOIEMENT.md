@@ -61,15 +61,39 @@ create table if not exists public.tradingbot_errors (
   message text not null
 );
 
+-- optionnelle : réglages ajustables à la volée sans redéployer, voir
+-- section "Ajuster le bot à la volée" plus bas. Le bot fonctionne très
+-- bien sans cette table (load_config_overrides() se rabat sur
+-- config.yaml si elle n'existe pas).
+create table if not exists public.tradingbot_config (
+  id text primary key default 'default',
+  risk_per_trade_pct numeric,
+  max_daily_loss_pct numeric,
+  max_total_drawdown_pct numeric,
+  max_correlation_for_new_position numeric,
+  correlation_lookback int,
+  momentum_lookback int,
+  max_concurrent_positions int,
+  active_symbols jsonb,
+  note text,
+  updated_by text,
+  updated_at timestamptz not null default now()
+);
+insert into public.tradingbot_config (id) values ('default')
+  on conflict (id) do nothing;
+
 alter table public.tradingbot_state enable row level security;
 alter table public.tradingbot_trades enable row level security;
 alter table public.tradingbot_errors enable row level security;
+alter table public.tradingbot_config enable row level security;
 
 create policy "tradingbot_state_all" on public.tradingbot_state
   for all to anon, authenticated using (true) with check (true);
 create policy "tradingbot_trades_all" on public.tradingbot_trades
   for all to anon, authenticated using (true) with check (true);
 create policy "tradingbot_errors_all" on public.tradingbot_errors
+  for all to anon, authenticated using (true) with check (true);
+create policy "tradingbot_config_all" on public.tradingbot_config
   for all to anon, authenticated using (true) with check (true);
 ```
 
@@ -79,18 +103,33 @@ Récupère ensuite, dans **Project Settings → API** :
 
 ## 2. Déployer sur Render
 
+⚠️ **Historique — blocage géographique Binance** : `api.binance.com`
+renvoie une erreur 451 "restricted location" pour les IP US, et Render
+héberge par défaut en Oregon (US) sur le plan gratuit. Le bot tourne
+maintenant sur **KuCoin** plutôt que Binance (`exchange.id: kucoin` dans
+`config.yaml`), qui ne bloque pas ce type d'IP — mais `render.yaml` cible
+quand même `region: frankfurt` (bon choix par défaut de toute façon,
+latence plus faible vers Europe). Si jamais KuCoin bloquait à son tour un
+jour, la solution de repli est de changer `exchange.id` dans
+`config.yaml` (`kraken`, `bybit`, `okx`...) — vérifie juste que les
+symboles du portefeuille existent bien sur le nouvel exchange.
+
+**Render ne permet pas de changer la région d'un service déjà créé** —
+pour changer de région il faut supprimer le service et en recréer un
+(le Blueprint s'en charge à la création).
+
 1. Pousse ce dossier (`trading_bot/`) dans un repo GitHub.
 2. Sur [render.com](https://render.com) : **New → Blueprint**, connecte
    le repo. Render détecte `render.yaml` automatiquement et propose de
-   créer le service `trading-bot-paper` (plan Free).
+   créer le service `trading-bot-paper` (plan Free, région Frankfurt).
 3. Avant le premier déploiement (ou juste après, dans **Environment**),
    renseigne les deux variables : `SUPABASE_URL` et `SUPABASE_KEY` (la
    clé anon récupérée à l'étape 1).
 4. Déploie. Une fois en ligne, l'URL ressemble à
    `https://trading-bot-paper-xxxx.onrender.com`. Vérifie que
-   `https://.../` répond "OK" dans un navigateur, puis que
-   `https://.../tick` répond un petit JSON (premier cycle : normal que
-   `trades_this_tick` soit vide la plupart du temps).
+   `https://.../` affiche la page de statut dans un navigateur, puis que
+   `https://.../tick` répond un petit JSON avec des paires bien
+   récupérées (`errors: []`).
 
 ## 3. Configurer UptimeRobot
 
@@ -102,6 +141,45 @@ Récupère ensuite, dans **Project Settings → API** :
    suffisant pour une stratégie sur bougies 1h).
 4. Sauvegarde. UptimeRobot va maintenant pinguer le bot en continu,
    24h/24, gratuitement.
+
+## 3bis. Ajuster le bot à la volée (sans redéployer) — `tradingbot_config`
+
+La table `tradingbot_config` (une seule ligne, `id='default'`, voir SQL
+plus haut) permet de surcharger certains réglages de `config.yaml`
+**entre deux cycles**, sans toucher au code ni redéployer sur Render —
+pratique pour réagir vite si quelque chose mérite d'être resserré.
+Une valeur laissée à `null` (ou la colonne absente de la mise à jour)
+veut dire "garde celle de `config.yaml`".
+
+Colonnes disponibles : `risk_per_trade_pct`, `max_daily_loss_pct`,
+`max_total_drawdown_pct`, `max_correlation_for_new_position`,
+`correlation_lookback`, `momentum_lookback`, `max_concurrent_positions`,
+et `active_symbols` (ex : `["BTC/USDT"]` pour désactiver ETH/SOL en
+nouvelle entrée — les positions déjà ouvertes sur une paire désactivée
+continuent d'être surveillées et fermées normalement, seules les
+NOUVELLES entrées sur cette paire sont bloquées).
+
+Exemple, dans le SQL Editor de Supabase, pour ne garder que BTC actif et
+réduire le risque par trade à 0,5% :
+
+```sql
+update public.tradingbot_config
+set active_symbols = '["BTC/USDT"]'::jsonb,
+    risk_per_trade_pct = 0.005,
+    note = 'resserré temporairement',
+    updated_by = 'enzo',
+    updated_at = now()
+where id = 'default';
+```
+
+Pour tout remettre aux valeurs de `config.yaml`, remets chaque colonne à
+`null` (`active_symbols` à `null` réactive toutes les paires).
+
+Chaque réponse de `/tick` indique `"config_overrides_active"` et
+`"active_symbols"` — de quoi vérifier d'un coup d'œil qu'une surcharge
+est bien prise en compte. Si la table n'existe pas encore (déploiement
+sans cette étape optionnelle), le bot tourne normalement avec les
+valeurs de `config.yaml` — aucune erreur.
 
 ## 4. Vérifier que ça tourne
 

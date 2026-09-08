@@ -22,10 +22,11 @@ from conftest import make_ohlcv
 
 
 class FakeDB:
-    def __init__(self):
+    def __init__(self, overrides=None):
         self.state = None
         self.trades = []
         self.errors = []
+        self.overrides = overrides or {}
 
     def load_state(self, initial_balance):
         if self.state is None:
@@ -48,6 +49,15 @@ class FakeDB:
 
     def log_error(self, message):
         self.errors.append(message)
+
+    def load_config_overrides(self):
+        return self.overrides
+
+    def get_recent_trades(self, limit=10):
+        return list(reversed(self.trades))[:limit]
+
+    def get_recent_errors(self, limit=5):
+        return []
 
 
 class Clock:
@@ -95,3 +105,59 @@ def test_run_tick_never_leaves_a_position_with_unresolved_substrategy(monkeypatc
 
     assert any_position_opened, "aucune position ouverte sur 60 ticks : le test ne couvre rien, ajuster les seeds/n"
     assert not fake_db.errors
+
+
+def test_apply_config_overrides_defaults_to_config_yaml_when_no_override():
+    risk_cfg = {"risk_per_trade_pct": 0.01, "max_daily_loss_pct": 0.03}
+    pf_cfg = {"symbols": ["BTC/USDT", "ETH/USDT"], "max_concurrent_positions": 2}
+
+    active = web_app._apply_config_overrides(risk_cfg, pf_cfg, overrides={})
+
+    assert risk_cfg["risk_per_trade_pct"] == 0.01  # inchangé
+    assert active == {"BTC/USDT", "ETH/USDT"}  # toutes les paires par défaut
+
+
+def test_apply_config_overrides_applies_overrides():
+    risk_cfg = {"risk_per_trade_pct": 0.01, "max_daily_loss_pct": 0.03,
+                "correlation_lookback": 30}
+    pf_cfg = {"symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT"], "max_concurrent_positions": 2}
+
+    active = web_app._apply_config_overrides(risk_cfg, pf_cfg, overrides={
+        "risk_per_trade_pct": 0.005,
+        "max_concurrent_positions": 1,
+        "active_symbols": ["BTC/USDT"],
+    })
+
+    assert risk_cfg["risk_per_trade_pct"] == 0.005
+    assert risk_cfg["max_daily_loss_pct"] == 0.03  # non surchargé, inchangé
+    assert pf_cfg["max_concurrent_positions"] == 1
+    assert active == {"BTC/USDT"}
+
+
+def test_run_tick_never_opens_new_positions_on_symbols_deactivated_by_override(monkeypatch):
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    active_symbol = symbols[0]
+
+    histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
+    clock = Clock(idx=250)
+    fake_db = FakeDB(overrides={"active_symbols": [active_symbol]})
+
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    for _ in range(60):
+        clock.idx += 5
+        result = web_app.run_tick()
+        assert result["ok"] is True
+        assert result["active_symbols"] == [active_symbol]
+        assert result["config_overrides_active"] is True
+
+        positions = fake_db.state["positions"] if fake_db.state else {}
+        for symbol, pos in positions.items():
+            if pos is not None:
+                assert symbol == active_symbol, (
+                    f"{symbol} a une position ouverte alors qu'il est désactivé par active_symbols"
+                )

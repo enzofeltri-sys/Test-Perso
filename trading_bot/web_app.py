@@ -184,6 +184,29 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _apply_config_overrides(risk_cfg: dict, pf_cfg: dict, overrides: dict) -> set:
+    """Applique les réglages posés dans tradingbot_config par-dessus
+    config.yaml (une valeur nulle/absente = on garde celle de
+    config.yaml). Retourne l'ensemble des symboles autorisés à ouvrir de
+    NOUVELLES positions — les positions déjà ouvertes sur une paire
+    désactivée restent gérées normalement (voir run_tick)."""
+    for key in ("risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
+                "max_correlation_for_new_position"):
+        if overrides.get(key) is not None:
+            risk_cfg[key] = float(overrides[key])
+
+    if overrides.get("correlation_lookback") is not None:
+        risk_cfg["correlation_lookback"] = int(overrides["correlation_lookback"])
+
+    if overrides.get("max_concurrent_positions") is not None:
+        pf_cfg["max_concurrent_positions"] = int(overrides["max_concurrent_positions"])
+    if overrides.get("momentum_lookback") is not None:
+        pf_cfg["momentum_lookback"] = int(overrides["momentum_lookback"])
+
+    active = overrides.get("active_symbols")
+    return set(active) if active else set(pf_cfg["symbols"])
+
+
 def run_tick() -> dict:
     cfg = load_config()
     pf_cfg = cfg["portfolio"]
@@ -191,6 +214,9 @@ def run_tick() -> dict:
     pt_cfg = cfg["paper_trading"]
     ex_cfg = cfg["exchange"]
     fee_pct = cfg["backtest"].get("fee_pct", 0.001)
+
+    overrides = db.load_config_overrides()
+    active_symbols = _apply_config_overrides(risk_cfg, pf_cfg, overrides)
 
     symbols = pf_cfg["symbols"]
     exchange = data.get_exchange(ex_cfg["id"])
@@ -285,6 +311,8 @@ def run_tick() -> dict:
         for s in rows:
             if positions.get(s):
                 continue
+            if s not in active_symbols:
+                continue  # désactivée via tradingbot_config.active_symbols
             if strategies[s].should_enter(rows[s]):
                 mom_series = dfs[s]["close"].pct_change(momentum_lookback)
                 mom = mom_series.iloc[-1] if len(mom_series) else 0.0
@@ -361,6 +389,14 @@ def run_tick() -> dict:
         "daily_breaker_tripped": daily_breaker._tripped_today,
         "total_drawdown_breaker_tripped": total_dd_breaker._tripped,
         "errors": fetch_errors,
+        "active_symbols": sorted(active_symbols),
+        "config_overrides_active": any(
+            overrides.get(k) is not None for k in (
+                "risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
+                "max_correlation_for_new_position", "correlation_lookback",
+                "momentum_lookback", "max_concurrent_positions", "active_symbols",
+            )
+        ),
     }
 
 
