@@ -144,6 +144,7 @@ class RegimeSwitchingStrategy:
         self.adx_trend_threshold = adx_trend_threshold
         self.regime_confirm_bars = regime_confirm_bars
         self._active = None  # 'trend' ou 'range', tant qu'une position est ouverte
+        self._pending_active = None  # candidat proposé par should_enter(), pas encore confirmé
 
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
         import regime as rg
@@ -161,16 +162,23 @@ class RegimeSwitchingStrategy:
         return df
 
     def should_enter(self, row) -> bool:
+        """Pure prédicat côté état confirmé : propose un régime candidat dans
+        `_pending_active` sans toucher à `_active` tant que l'entrée n'est pas
+        confirmée par un appel à `compute_stop_and_target()`. Sans cette
+        distinction, un appelant (portefeuille) qui évalue plusieurs candidats
+        avant d'allouer les slots disponibles pourrait laisser `_active` sur un
+        régime alors qu'aucune position n'a réellement été ouverte pour ce
+        symbole — et donc fausser `active_regime` / `should_exit_on_signal`."""
         regime = row["regime"]
         if pd.isna(regime):
             return False
         if regime == "trending":
             if self.trend_strategy.should_enter(row):
-                self._active = "trend"
+                self._pending_active = "trend"
                 return True
         else:
             if self.range_strategy.should_enter(row):
-                self._active = "range"
+                self._pending_active = "range"
                 return True
         return False
 
@@ -182,6 +190,10 @@ class RegimeSwitchingStrategy:
         return False
 
     def compute_stop_and_target(self, entry_price: float, row):
+        """Appelé uniquement lorsque l'entrée proposée par should_enter() est
+        réellement exécutée : c'est le seul moment où on confirme le régime
+        actif pour la durée de la position."""
+        self._active = self._pending_active
         if self._active == "range":
             return self.range_strategy.compute_stop_and_target(entry_price, row)
         return self.trend_strategy.compute_stop_and_target(entry_price, row)

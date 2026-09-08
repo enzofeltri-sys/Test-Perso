@@ -28,7 +28,14 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     result = 100 - (100 / (1 + rs))
-    return result.fillna(50)  # neutre tant qu'on manque de données ou de mouvement
+    # avg_loss == 0 rend `rs` NaN dans les deux cas suivants, qu'il faut
+    # distinguer : une vraie série de hausses pures (aucune perte sur toute
+    # la période) doit donner un RSI de 100 (extrême), pas 50 (neutre) —
+    # sans ce cas particulier, un marché en hausse ininterrompue ne
+    # déclenchait jamais le veto de surachat (rsi_veto_overbought).
+    pure_uptrend = (avg_gain > 0) & (avg_loss == 0)
+    result = result.where(~pure_uptrend, 100.0)
+    return result.fillna(50)  # neutre tant qu'on manque de données ou d'aucun mouvement
 
 
 def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):

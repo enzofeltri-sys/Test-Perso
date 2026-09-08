@@ -5,3 +5,4 @@ venv/
 logs/*.csv
 *.png
 .env
+.pytest_cache/

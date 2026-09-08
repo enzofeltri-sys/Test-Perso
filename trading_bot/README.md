@@ -37,6 +37,17 @@ sans un ordinateur allumé en permanence.
 pip install -r requirements.txt
 ```
 
+## Tests
+
+```bash
+pytest tests/
+```
+
+Tests unitaires sur les indicateurs, la gestion du risque, la détection de
+régime (hystérésis), la non-fuite d'état entre paires de la stratégie à
+bascule, et un test de bout en bout du backtest portefeuille + walk-forward
+sur données synthétiques (pas de réseau requis).
+
 ## Architecture de la stratégie
 
 ### 1. Bascule selon le régime de marché (`regime.py`, `strategy.py`)
@@ -119,7 +130,12 @@ avec les données d'entraînement (`train_days`), puis testés sur la
 période suivante (`test_days`), jamais vue pendant le choix. On avance
 et on recommence. Seuls les résultats de test (hors-échantillon) sont
 agrégés — jamais les résultats d'entraînement, qui seraient
-artificiellement optimistes.
+artificiellement optimistes. Chaque fenêtre entraîne et teste le
+**portefeuille complet** (toutes les paires ensemble, via
+`PortfolioBacktester`), avec les mêmes garde-fous que le backtest et le
+paper trading réels (anti-corrélation, priorisation par momentum,
+coupe-circuits partagés) — valider une paire isolée à la place ne dirait
+rien sur l'effet de ces garde-fous-là.
 
 **Monte Carlo (`monte_carlo.py`)** : un backtest ne montre qu'UN seul
 chemin possible (l'ordre exact où les trades sont arrivés). Le bootstrap
@@ -228,7 +244,12 @@ fera ensemble, progressivement.
 - Un seul sens (long-only), pas de vente à découvert, pas de levier.
 - Le stop-loss/take-profit est vérifié sur le high/low de chaque bougie
   avec slippage simulé, mais reste une approximation : pas de vraie
-  latence réseau, pas de carnet d'ordres.
+  latence réseau, pas de carnet d'ordres. Si le stop ET le take-profit
+  sont techniquement touchés dans la MÊME bougie, on ne peut pas savoir
+  dans quel ordre c'est arrivé (on n'a que high/low/close, pas la
+  séquence intra-bougie) — le code tranche systématiquement en faveur du
+  stop-loss, l'hypothèse la plus conservatrice, mais ça reste une
+  approximation à garder en tête sur les bougies larges (1h+).
 - Le filtre anti-corrélation utilise une corrélation glissante calculée
   sur l'historique récent (`correlation_lookback`) — or c'est justement
   pendant les périodes de stress de marché que les corrélations entre

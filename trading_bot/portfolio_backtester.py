@@ -50,6 +50,20 @@ import matplotlib.pyplot as plt
 from risk import position_size, DailyLossCircuitBreaker, TotalDrawdownCircuitBreaker
 
 
+def _periods_per_year(index: pd.DatetimeIndex) -> float:
+    """Facteur d'annualisation dérivé de l'espacement réel des bougies de la
+    courbe d'équité, plutôt qu'un `sqrt(365)` supposant à tort des bougies
+    journalières (le timeframe configuré peut être 1m, 1h, 4h, 1d, ...) —
+    sinon le Sharpe annualisé est faussé d'un facteur potentiellement énorme."""
+    if len(index) < 2:
+        return 365.0
+    median_seconds = pd.Series(index).diff().dt.total_seconds().median()
+    if not median_seconds or median_seconds <= 0:
+        return 365.0
+    seconds_per_year = 365.25 * 24 * 3600
+    return seconds_per_year / median_seconds
+
+
 class PortfolioBacktester:
     def __init__(self, strategy_factory, initial_balance: float, fee_pct: float,
                  risk_per_trade_pct: float, max_daily_loss_pct: float = None,
@@ -251,7 +265,7 @@ class PortfolioBacktester:
         max_drawdown_pct = drawdown.min() * 100 if len(drawdown) else 0
 
         returns = equity.pct_change().dropna()
-        sharpe = (returns.mean() / returns.std() * np.sqrt(365)) if returns.std() > 0 else 0
+        sharpe = (returns.mean() / returns.std() * np.sqrt(_periods_per_year(equity.index))) if returns.std() > 0 else 0
 
         pnls = [t["pnl"] for t in trades]
         num_trades = len(pnls)

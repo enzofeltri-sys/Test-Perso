@@ -94,31 +94,38 @@ def cmd_backtest(cfg: dict):
 def cmd_validate(cfg: dict):
     bt_cfg = cfg["backtest"]
     risk_cfg = cfg["risk"]
+    pf_cfg = cfg["portfolio"]
     wf_cfg = cfg["walk_forward"]
     mc_cfg = cfg["monte_carlo"]
 
-    backtest_kwargs = dict(
+    # Mêmes garde-fous portefeuille (anti-corrélation, priorisation par momentum,
+    # coupe-circuits partagés) que cmd_backtest / le paper trading réel : le
+    # walk-forward doit valider CE portefeuille-là, pas une paire isolée.
+    portfolio_kwargs = dict(
         initial_balance=bt_cfg["initial_balance"],
         fee_pct=bt_cfg["fee_pct"],
         risk_per_trade_pct=risk_cfg["risk_per_trade_pct"],
         max_daily_loss_pct=risk_cfg.get("max_daily_loss_pct"),
         slippage_pct=bt_cfg.get("slippage_pct", 0.0),
+        max_concurrent_positions=pf_cfg.get("max_concurrent_positions"),
+        max_correlation_for_new_position=risk_cfg.get("max_correlation_for_new_position"),
+        correlation_lookback=risk_cfg.get("correlation_lookback", 30),
+        momentum_lookback=pf_cfg.get("momentum_lookback", 20),
+        max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
     )
 
     market_data = _fetch_portfolio_history(cfg)
 
-    print("\n===== Validation walk-forward (par paire) =====")
+    print("\n===== Validation walk-forward (portefeuille complet) =====")
     print("Seuls les résultats HORS-ÉCHANTILLON (test) sont agrégés ci-dessous — voir README.\n")
-    for symbol, df in market_data.items():
-        windows = walk_forward_analysis(
-            df, cfg["strategy"], wf_cfg["param_grid"], backtest_kwargs,
-            train_days=wf_cfg["train_days"], test_days=wf_cfg["test_days"], step_days=wf_cfg["step_days"],
-        )
-        agg = aggregate_walk_forward(windows)
-        print(f"--- {symbol} ---")
-        if agg.get("num_windows", 0) == 0:
-            print("  Pas assez d'historique pour au moins une fenêtre train/test complète.")
-            continue
+    windows = walk_forward_analysis(
+        market_data, cfg["strategy"], wf_cfg["param_grid"], portfolio_kwargs,
+        train_days=wf_cfg["train_days"], test_days=wf_cfg["test_days"], step_days=wf_cfg["step_days"],
+    )
+    agg = aggregate_walk_forward(windows)
+    if agg.get("num_windows", 0) == 0:
+        print("  Pas assez d'historique pour au moins une fenêtre train/test complète.")
+    else:
         print(f"  Fenêtres testées            : {agg['num_windows']}")
         print(f"  Rendement OOS composé       : {agg['compounded_oos_return_pct']:.2f} %")
         print(f"  Sharpe OOS moyen            : {agg['avg_oos_sharpe']:.2f}")
@@ -126,7 +133,7 @@ def cmd_validate(cfg: dict):
         print(f"  Pire drawdown OOS observé   : {agg['worst_oos_max_drawdown_pct']:.2f} %")
         print(f"  % de fenêtres positives     : {agg['pct_windows_positive']:.1f} %")
         print(f"  Trades hors-échantillon     : {agg['total_oos_trades']}")
-        print()
+    print()
 
     print("===== Backtest portefeuille + analyse Monte Carlo =====")
     results = cmd_backtest(cfg)
