@@ -49,6 +49,15 @@ def cmd_backtest(cfg: dict):
 
     market_data = _fetch_portfolio_history(cfg)
 
+    # quantité/valeur minimum par ordre sur l'exchange configuré (voir
+    # data.get_min_order_limits) — un backtest qui ignorerait ces
+    # planchers surestimerait ce qu'un exchange réel aurait accepté.
+    try:
+        exchange = data.get_exchange(cfg["exchange"]["id"])
+        min_order_limits = data.get_min_order_limits(exchange, pf_cfg["symbols"])
+    except Exception:
+        min_order_limits = {}
+
     def strategy_factory():
         return regime_strategy_from_config(cfg["strategy"])
 
@@ -64,6 +73,7 @@ def cmd_backtest(cfg: dict):
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
+        min_order_limits=min_order_limits,
     )
     results = bt.run(market_data)
 
@@ -98,6 +108,12 @@ def cmd_validate(cfg: dict):
     wf_cfg = cfg["walk_forward"]
     mc_cfg = cfg["monte_carlo"]
 
+    try:
+        exchange = data.get_exchange(cfg["exchange"]["id"])
+        min_order_limits = data.get_min_order_limits(exchange, pf_cfg["symbols"])
+    except Exception:
+        min_order_limits = {}
+
     # Mêmes garde-fous portefeuille (anti-corrélation, priorisation par momentum,
     # coupe-circuits partagés) que cmd_backtest / le paper trading réel : le
     # walk-forward doit valider CE portefeuille-là, pas une paire isolée.
@@ -112,6 +128,7 @@ def cmd_validate(cfg: dict):
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
+        min_order_limits=min_order_limits,
     )
 
     market_data = _fetch_portfolio_history(cfg)

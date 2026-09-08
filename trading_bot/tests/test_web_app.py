@@ -151,6 +151,54 @@ def test_run_tick_applies_slippage_to_fills(monkeypatch):
     assert checked_at_least_one_fill, "aucun trade au close exact à vérifier sur 60 ticks — ajuster seeds/n"
 
 
+def test_run_tick_survives_min_order_limits_lookup_failure(monkeypatch):
+    """data.get_min_order_limits() fait un appel réseau (load_markets) — s'il
+    échoue, /tick doit continuer à fonctionner sans plancher connu plutôt que
+    de planter le cycle entier pour une info secondaire."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+
+    histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
+    clock = Clock(idx=250)
+    fake_db = FakeDB()
+
+    def _boom(exchange, symbols):
+        raise RuntimeError("exchange indisponible")
+
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app.data, "get_min_order_limits", _boom)
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    clock.idx += 5
+    result = web_app.run_tick()
+    assert result["ok"] is True
+
+
+def test_run_tick_rejects_entries_below_exchange_min_order(monkeypatch):
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+
+    histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
+    clock = Clock(idx=250)
+    fake_db = FakeDB()
+
+    huge_limits = {s: {"min_amount": None, "min_cost": 10_000_000.0} for s in symbols}
+
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app.data, "get_min_order_limits", lambda exchange, syms: huge_limits)
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    for _ in range(60):
+        clock.idx += 5
+        web_app.run_tick()
+
+    assert not fake_db.trades, "aucun ordre ne devrait jamais passer sous le minimum de l'exchange"
+
+
 def test_apply_config_overrides_defaults_to_config_yaml_when_no_override():
     risk_cfg = {"risk_per_trade_pct": 0.01, "max_daily_loss_pct": 0.03}
     pf_cfg = {"symbols": ["BTC/USDT", "ETH/USDT"], "max_concurrent_positions": 2}

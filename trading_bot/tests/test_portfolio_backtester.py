@@ -6,7 +6,7 @@ from portfolio_backtester import PortfolioBacktester, _periods_per_year
 from strategy import regime_strategy_from_config
 
 
-def _make_backtester(cfg):
+def _make_backtester(cfg, min_order_limits=None):
     def strategy_factory():
         return regime_strategy_from_config(cfg["strategy"])
 
@@ -23,6 +23,7 @@ def _make_backtester(cfg):
         max_correlation_for_new_position=risk_cfg.get("max_correlation_for_new_position"),
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
+        min_order_limits=min_order_limits,
     )
 
 
@@ -53,6 +54,22 @@ def test_total_drawdown_breaker_never_unblocks_once_tripped(portfolio_data):
     result = bt.run(portfolio_data)
     if bt.total_dd_breaker.tripped:
         assert result["total_drawdown_breaker_blocks"] > 0
+
+
+def test_min_order_limits_reject_trades_below_exchange_floor(portfolio_data):
+    """Le bot doit se comporter comme s'il tradait pour de vrai : un signal
+    dont la taille calculée par le risque tomberait sous le minimum d'ordre
+    de l'exchange doit être refusé, pas exécuté quand même."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+
+    baseline = _make_backtester(cfg).run(portfolio_data)
+    assert baseline["num_trades"] > 0, "le scénario de base doit produire des trades pour que le test prouve quelque chose"
+
+    # plancher de notionnel absurdement haut -> aucun trade ne peut jamais passer
+    huge_limits = {s: {"min_amount": None, "min_cost": 10_000_000.0} for s in portfolio_data}
+    blocked = _make_backtester(cfg, min_order_limits=huge_limits).run(portfolio_data)
+    assert blocked["num_trades"] == 0
 
 
 def test_periods_per_year_matches_hourly_candles():

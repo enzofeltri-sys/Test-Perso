@@ -113,8 +113,18 @@ concentration :
   **reste déclenché** — il n'y a pas de "jour suivant" qui repart à
   zéro. L'idée : une perte de cette ampleur doit être analysée par un
   humain, pas juste attendre que ça reparte.
-- **Slippage simulé** (`slippage_pct`) dans le backtest, pour ne pas se
-  mentir avec des prix d'exécution parfaits.
+- **Slippage simulé** (`slippage_pct`) — appliqué à CHAQUE exécution
+  (backtest, paper trading local et déployé), pour ne pas se mentir avec
+  des prix d'exécution parfaits que même un exchange réel ne donnerait
+  jamais.
+- **Minimum d'ordre de l'exchange** : avant chaque entrée, le bot
+  interroge les limites réelles de l'exchange (quantité et/ou valeur
+  notionnelle minimum par paire, via ccxt) et refuse le trade si la
+  taille calculée par le risque tombe en dessous — plutôt que
+  d'arrondir vers le haut, ce qui reviendrait à risquer plus que
+  `risk_per_trade_pct` sans le décider explicitement. Best-effort : si
+  l'exchange ne publie pas ces limites pour une paire, aucun plancher
+  n'est appliqué pour cette paire.
 
 ### 4. Validation — la partie qui compte vraiment
 

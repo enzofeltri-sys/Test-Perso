@@ -221,6 +221,13 @@ def run_tick() -> dict:
 
     symbols = pf_cfg["symbols"]
     exchange = data.get_exchange(ex_cfg["id"])
+    # quantité/valeur minimum par ordre sur cet exchange (voir
+    # data.get_min_order_limits) — best-effort, {} si l'appel échoue
+    # (comportement identique à avant ce contrôle, pas de plancher).
+    try:
+        min_order_limits = data.get_min_order_limits(exchange, symbols)
+    except Exception:
+        min_order_limits = {}
     # une instance de stratégie par paire, reconstruite à chaque appel
     # (aucun état interne des stratégies n'est réutilisé d'un tick à
     # l'autre : la sous-stratégie active pour une position ouverte est
@@ -354,7 +361,9 @@ def run_tick() -> dict:
             active = strategies[s].active_regime
             equity_now = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
             available_cash = cash / (1 + fee_pct)
-            qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], fill_price, stop_distance, available_cash)
+            limits = min_order_limits.get(s, {})
+            qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], fill_price, stop_distance, available_cash,
+                                 min_amount=limits.get("min_amount"), min_cost=limits.get("min_cost"))
 
             if qty > 0:
                 cost = qty * fill_price

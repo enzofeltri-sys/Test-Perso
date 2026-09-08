@@ -35,6 +35,14 @@ class PortfolioPaperTrader:
         self.poll_interval_seconds = poll_interval_seconds
         self.fee_pct = fee_pct
         self.slippage_pct = slippage_pct
+        # quantité/valeur minimum par ordre sur cet exchange (voir
+        # data.get_min_order_limits) — chargé une fois, les limites de
+        # marché ne changent pas assez souvent pour justifier un appel
+        # à chaque cycle. Best-effort : {} si l'exchange ne répond pas.
+        try:
+            self.min_order_limits = data.get_min_order_limits(self.exchange, symbols)
+        except Exception:
+            self.min_order_limits = {}
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_concurrent_positions = max_concurrent_positions
         self.max_correlation_for_new_position = max_correlation_for_new_position
@@ -164,7 +172,9 @@ class PortfolioPaperTrader:
                 fill_price = row["close"] * (1 + self.slippage_pct)  # exécution légèrement défavorable
                 stop_p, target_p, stop_distance = self.strategies[s].compute_stop_and_target(fill_price, row)
                 available_cash = self.cash / (1 + self.fee_pct)
-                qty = position_size(equity_now, self.risk_per_trade_pct, fill_price, stop_distance, available_cash)
+                limits = self.min_order_limits.get(s, {})
+                qty = position_size(equity_now, self.risk_per_trade_pct, fill_price, stop_distance, available_cash,
+                                     min_amount=limits.get("min_amount"), min_cost=limits.get("min_cost"))
 
                 if qty > 0:
                     cost = qty * fill_price

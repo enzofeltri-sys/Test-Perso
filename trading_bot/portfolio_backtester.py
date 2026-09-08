@@ -69,10 +69,16 @@ class PortfolioBacktester:
                  risk_per_trade_pct: float, max_daily_loss_pct: float = None,
                  slippage_pct: float = 0.0, max_concurrent_positions: int = None,
                  max_correlation_for_new_position: float = None, correlation_lookback: int = 30,
-                 momentum_lookback: int = 20, max_total_drawdown_pct: float = None):
+                 momentum_lookback: int = 20, max_total_drawdown_pct: float = None,
+                 min_order_limits: dict = None):
         """
         strategy_factory: fonction sans argument qui retourne une NOUVELLE
         instance de stratégie (une par symbole, cf. docstring du module).
+
+        min_order_limits: {symbol: {"min_amount": ..., "min_cost": ...}}
+        (voir data.get_min_order_limits) — un signal qui suggère une
+        position plus petite que le minimum d'ordre de l'exchange pour ce
+        symbole est refusé, comme le ferait un exchange réel.
         """
         self.strategy_factory = strategy_factory
         self.initial_balance = initial_balance
@@ -83,6 +89,7 @@ class PortfolioBacktester:
         self.max_correlation_for_new_position = max_correlation_for_new_position
         self.correlation_lookback = correlation_lookback
         self.momentum_lookback = momentum_lookback
+        self.min_order_limits = min_order_limits or {}
         self.daily_breaker = DailyLossCircuitBreaker(max_daily_loss_pct) if max_daily_loss_pct else None
         self.total_dd_breaker = TotalDrawdownCircuitBreaker(max_total_drawdown_pct) if max_total_drawdown_pct else None
 
@@ -220,7 +227,9 @@ class PortfolioBacktester:
                     stop_p, target_p, stop_distance = strategies[s].compute_stop_and_target(fill_price, row)
 
                     available_cash = cash / (1 + self.fee_pct)
-                    qty = position_size(equity_now, self.risk_per_trade_pct, fill_price, stop_distance, available_cash)
+                    limits = self.min_order_limits.get(s, {})
+                    qty = position_size(equity_now, self.risk_per_trade_pct, fill_price, stop_distance, available_cash,
+                                         min_amount=limits.get("min_amount"), min_cost=limits.get("min_cost"))
 
                     if qty > 0:
                         cost = qty * fill_price

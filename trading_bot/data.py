@@ -64,3 +64,27 @@ def fetch_latest_candles(exchange, symbol: str, timeframe: str, limit: int = 200
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df = df.set_index("timestamp").sort_index()
     return df
+
+
+def get_min_order_limits(exchange, symbols: list) -> dict:
+    """Contraintes minimales de l'exchange par paire (quantité et/ou
+    valeur notionnelle minimum par ordre) — sans ça, le bot peut calculer
+    une position plus petite que ce qu'un exchange réel accepterait, un
+    ordre qu'aucune exécution réelle ne pourrait jamais passer.
+
+    Retourne {symbol: {"min_amount": float|None, "min_cost": float|None}}.
+    Best-effort : certains exchanges ne publient pas ces limites via ccxt
+    pour certaines paires, auquel cas la paire concernée n'a simplement
+    pas de plancher connu (comportement identique à avant ce contrôle)."""
+    if not exchange.markets:
+        exchange.load_markets()
+
+    limits = {}
+    for s in symbols:
+        market = exchange.markets.get(s)
+        m_limits = (market or {}).get("limits") or {}
+        limits[s] = {
+            "min_amount": (m_limits.get("amount") or {}).get("min"),
+            "min_cost": (m_limits.get("cost") or {}).get("min"),
+        }
+    return limits

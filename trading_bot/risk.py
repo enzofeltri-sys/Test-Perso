@@ -29,7 +29,8 @@ from datetime import datetime
 
 
 def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
-                   stop_distance: float, available_cash: float) -> float:
+                   stop_distance: float, available_cash: float,
+                   min_amount: float = None, min_cost: float = None) -> float:
     """
     Retourne la quantité (en unités de l'actif, ex: BTC) à acheter.
 
@@ -39,6 +40,13 @@ def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
     - stop_distance: écart en prix entre le prix d'entrée et le stop-loss
     - available_cash: cash réellement disponible (on ne peut pas dépenser
       plus que ça, même si le sizing par le risque le suggérait)
+    - min_amount / min_cost: quantité et/ou valeur notionnelle minimum
+      qu'un ordre doit atteindre sur cet exchange (voir
+      data.get_min_order_limits). Si la position calculée par le risque
+      tombe EN DESSOUS de ce plancher, aucun exchange réel n'accepterait
+      l'ordre — on retourne 0 (le trade est refusé) plutôt que
+      d'arrondir vers le haut, ce qui reviendrait à risquer plus que
+      `risk_per_trade_pct` sans le décider explicitement.
     """
     if stop_distance <= 0 or entry_price <= 0:
         return 0.0
@@ -48,7 +56,15 @@ def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
 
     max_qty_by_cash = available_cash / entry_price
 
-    return max(0.0, min(qty_by_risk, max_qty_by_cash))
+    qty = max(0.0, min(qty_by_risk, max_qty_by_cash))
+    if qty <= 0:
+        return 0.0
+
+    effective_min_cost = max(min_cost or 0.0, (min_amount or 0.0) * entry_price)
+    if effective_min_cost > 0 and qty * entry_price < effective_min_cost:
+        return 0.0
+
+    return qty
 
 
 @dataclass

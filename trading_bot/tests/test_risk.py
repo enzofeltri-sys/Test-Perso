@@ -19,6 +19,35 @@ def test_position_size_capped_by_available_cash():
     assert qty == pytest.approx(100 / 50)
 
 
+def test_position_size_rejected_below_min_cost():
+    # risque 1% de 10_000 = 100, stop à 5 -> 20 unités @ 50 = 1000 de notionnel,
+    # mais l'exchange exige au moins 1500 -> aucun exchange réel n'accepterait
+    # cet ordre, donc on le refuse plutôt que de risquer plus que prévu
+    qty = position_size(equity=10_000, risk_per_trade_pct=0.01, entry_price=50,
+                         stop_distance=5, available_cash=100_000, min_cost=1500)
+    assert qty == 0.0
+
+
+def test_position_size_rejected_below_min_amount():
+    # 20 unités calculées, mais l'exchange exige au moins 25 unités par ordre
+    qty = position_size(equity=10_000, risk_per_trade_pct=0.01, entry_price=50,
+                         stop_distance=5, available_cash=100_000, min_amount=25)
+    assert qty == 0.0
+
+
+def test_position_size_accepted_above_min_order_limits():
+    qty = position_size(equity=10_000, risk_per_trade_pct=0.01, entry_price=50,
+                         stop_distance=5, available_cash=100_000, min_amount=5, min_cost=500)
+    assert qty == pytest.approx(20.0)
+
+
+def test_position_size_ignores_min_limits_when_not_provided():
+    # comportement par défaut inchangé : pas de plancher connu -> pas de refus
+    qty = position_size(equity=10_000, risk_per_trade_pct=0.01, entry_price=50,
+                         stop_distance=5, available_cash=100_000)
+    assert qty == pytest.approx(20.0)
+
+
 def test_position_size_zero_on_invalid_stop_distance():
     assert position_size(10_000, 0.01, 50, stop_distance=0, available_cash=1000) == 0.0
     assert position_size(10_000, 0.01, 50, stop_distance=-1, available_cash=1000) == 0.0
