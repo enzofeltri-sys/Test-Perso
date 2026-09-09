@@ -30,7 +30,8 @@ from datetime import datetime
 
 def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
                    stop_distance: float, available_cash: float,
-                   min_amount: float = None, min_cost: float = None) -> float:
+                   min_amount: float = None, min_cost: float = None,
+                   max_position_pct_of_equity: float = None) -> float:
     """
     Retourne la quantité (en unités de l'actif, ex: BTC) à acheter.
 
@@ -40,6 +41,18 @@ def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
     - stop_distance: écart en prix entre le prix d'entrée et le stop-loss
     - available_cash: cash réellement disponible (on ne peut pas dépenser
       plus que ça, même si le sizing par le risque le suggérait)
+    - max_position_pct_of_equity: part maximale du capital total qu'UNE
+      position peut représenter (ex: 0.25 pour 25%), indépendamment du
+      dimensionnement par le risque. Nécessaire parce que le sizing par
+      le risque est inversement proportionnel à la distance du stop :
+      quand la volatilité est basse, le stop est serré et la taille
+      demandée explose (mesuré sur un an réel : jusqu'à 133% du capital,
+      donc borné par le cash, soit 100% du capital sur une seule paire).
+      Le risque "1% par trade" reste alors vrai SI le stop est honoré,
+      mais ne dit plus rien du risque de trou de cotation (gap), où c'est
+      toute la position qui est exposée. Ce plafond borne ce risque-là,
+      et c'est aussi lui qui rend `max_concurrent_positions` réellement
+      atteignable (sans lui, la première position consomme tout le cash).
     - min_amount / min_cost: quantité et/ou valeur notionnelle minimum
       qu'un ordre doit atteindre sur cet exchange (voir
       data.get_min_order_limits). Si la position calculée par le risque
@@ -57,6 +70,13 @@ def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
     max_qty_by_cash = available_cash / entry_price
 
     qty = max(0.0, min(qty_by_risk, max_qty_by_cash))
+
+    # plafond de concentration appliqué AVANT le contrôle de minimum
+    # d'ordre : une position rabotée sous le minimum de l'exchange doit
+    # être refusée, pas passée à sa taille d'avant plafonnement.
+    if max_position_pct_of_equity:
+        qty = min(qty, equity * max_position_pct_of_equity / entry_price)
+
     if qty <= 0:
         return 0.0
 

@@ -77,6 +77,7 @@ def cmd_backtest(cfg: dict):
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
+        max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
         min_order_limits=min_order_limits,
     )
     results = bt.run(market_data)
@@ -132,6 +133,7 @@ def cmd_validate(cfg: dict):
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
+        max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
         min_order_limits=min_order_limits,
     )
 
@@ -216,6 +218,7 @@ def cmd_paper(cfg: dict, run_once: bool):
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
+        max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
     )
 
     if run_once:

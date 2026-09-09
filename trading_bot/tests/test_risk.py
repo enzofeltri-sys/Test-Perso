@@ -80,3 +80,46 @@ def test_total_drawdown_breaker_trips_and_stays_tripped():
 
     breaker.update(1300)  # même si l'équity remonte au-dessus de l'ancien plus haut...
     assert not breaker.can_open_new_position()  # ...reste déclenché, par design
+
+
+def test_position_size_caps_concentration_when_stop_is_tight():
+    """Régression du cas réel observé le 09/09/2026 : stop à 0,75% du prix,
+    le sizing par le risque demandait 133% du capital, donc le cash bornait
+    à ~100% — tout le capital sur une seule paire. Le plafond doit ramener
+    ça à la part configurée."""
+    equity = cash = 1000.0
+    entry, stop_distance = 79173.57, 596.71
+
+    sans = position_size(equity, 0.01, entry, stop_distance, cash)
+    assert sans * entry == pytest.approx(cash, rel=0.01), "sans plafond : le cash borne, position ~100%"
+
+    avec = position_size(equity, 0.01, entry, stop_distance, cash, max_position_pct_of_equity=0.25)
+    assert avec * entry == pytest.approx(250.0, rel=1e-6)
+    assert avec < sans
+
+
+def test_position_size_cap_never_increases_a_position():
+    """Le plafond ne doit que RÉDUIRE : quand le risque demande déjà moins
+    que le plafond, il ne doit rien changer."""
+    equity = cash = 1000.0
+    entry, stop_distance = 100.0, 20.0  # risque 1% / stop large -> 0.5 unité = 50 USDT = 5%
+
+    sans = position_size(equity, 0.01, entry, stop_distance, cash)
+    avec = position_size(equity, 0.01, entry, stop_distance, cash, max_position_pct_of_equity=0.25)
+    assert avec == sans == pytest.approx(0.5)
+
+
+def test_position_size_cap_applies_before_exchange_minimum():
+    """Une position rabotée par le plafond SOUS le minimum d'ordre de
+    l'exchange doit être refusée — jamais passée à sa taille d'avant
+    plafonnement (ce serait contourner le plafond)."""
+    equity = cash = 1000.0
+    entry, stop_distance = 100.0, 1.0   # risque veut 10 unités = 1000 USDT
+
+    sans = position_size(equity, 0.01, entry, stop_distance, cash, min_cost=200.0)
+    assert sans > 0, "sans plafond la position dépasse le minimum d'ordre"
+
+    # plafond 10% -> 100 USDT, sous le minimum de 200 -> refus
+    avec = position_size(equity, 0.01, entry, stop_distance, cash,
+                         min_cost=200.0, max_position_pct_of_equity=0.10)
+    assert avec == 0.0

@@ -268,7 +268,7 @@ def _apply_config_overrides(risk_cfg: dict, pf_cfg: dict, overrides: dict) -> se
     NOUVELLES positions — les positions déjà ouvertes sur une paire
     désactivée restent gérées normalement (voir run_tick)."""
     for key in ("risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
-                "max_correlation_for_new_position"):
+                "max_correlation_for_new_position", "max_position_pct_of_equity"):
         if overrides.get(key) is not None:
             risk_cfg[key] = float(overrides[key])
 
@@ -297,6 +297,7 @@ def _apply_strategy_overrides(base_strategy_cfg: dict, strategy_overrides: dict)
 
 CONFIG_OVERRIDE_KEYS = (
     "risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
+    "max_position_pct_of_equity",
     "max_correlation_for_new_position", "correlation_lookback",
     "momentum_lookback", "max_concurrent_positions", "active_symbols",
     "strategy_overrides",
@@ -534,6 +535,7 @@ def run_tick() -> dict:
             available_cash = cash / (1 + fee_pct)
             limits = min_order_limits.get(s, {})
             qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], fill_price, stop_distance, available_cash,
+                                 max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
                                  min_amount=limits.get("min_amount"), min_cost=limits.get("min_cost"))
 
             if qty > 0:

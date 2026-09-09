@@ -21,6 +21,7 @@ def _portfolio_kwargs(cfg):
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
+        max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
     )
 
 

@@ -105,6 +105,18 @@ strategy:
 # ---------------------------------------------------------------
 risk:
   risk_per_trade_pct: 0.01     # on accepte de perdre au plus 1% du capital si le stop est touché
+  # Part maximale du capital dans UNE seule position. Sans ce plafond, le
+  # dimensionnement par le risque (inversement proportionnel à la distance
+  # du stop) demande une position d'autant plus GROSSE que la volatilité
+  # est basse : mesuré sur un an réel, 24% des entrées finissaient bornées
+  # par le cash disponible, soit ~100% du capital sur une seule paire
+  # (position médiane : 50%). Le "1% de risque par trade" restait vrai TANT
+  # QUE le stop est honoré, mais tout le capital était exposé à un trou de
+  # cotation. En walk-forward, plafonner ne coûte rien en rendement
+  # (-1,27% -> -0,06%) et divise presque par deux le pire drawdown
+  # (-5,84% -> -3,16%). C'est aussi ce qui rend max_concurrent_positions
+  # réellement atteignable. `null` pour désactiver.
+  max_position_pct_of_equity: 0.25
   max_daily_loss_pct: 0.03     # coupe-circuit journalier : arrête les nouvelles entrées après -3% sur une journée
   max_total_drawdown_pct: 0.20 # coupe-circuit TOTAL : arrête définitivement (jusqu'à révision manuelle) après -20% depuis le plus haut
   max_correlation_for_new_position: 0.75  # refuse une nouvelle position trop corrélée à une position déjà ouverte (null pour désactiver)

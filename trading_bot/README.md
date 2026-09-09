@@ -125,6 +125,21 @@ concentration :
 - **Dimensionnement par le risque** : la taille de chaque position est
   calculée pour ne jamais perdre plus de `risk_per_trade_pct` (1% par
   défaut) du capital total si le stop est touché.
+- **Plafond de concentration** (`max_position_pct_of_equity`, 25% par
+  défaut) : part maximale du capital dans UNE position. Le
+  dimensionnement ci-dessus est inversement proportionnel à la distance
+  du stop — quand la volatilité est basse, le stop est serré et la
+  taille demandée explose. Mesuré sur un an de données réelles : la
+  position médiane atteignait 50% du capital, et 24% des entrées
+  finissaient bornées par le cash disponible, soit ~100% du capital sur
+  une seule paire (cas réel du 09/09/2026 : stop à 0,75%, sizing par le
+  risque = 133% du capital). Le "1% de risque par trade" restait exact
+  *si le stop est honoré*, mais ne disait plus rien du risque de trou de
+  cotation, où c'est toute la position qui est exposée. En walk-forward,
+  ce plafond ne coûte rien en rendement (-1,27% → -0,06%) et divise
+  presque par deux le pire drawdown (-5,84% → -3,16%) ; c'est aussi lui
+  qui rend `max_concurrent_positions` réellement atteignable, la
+  première position ne consommant plus tout le cash.
 - **Coupe-circuit de perte journalière** : arrête les nouvelles entrées
   après `max_daily_loss_pct` (3% par défaut) de perte sur une journée,
   se réinitialise le jour suivant.

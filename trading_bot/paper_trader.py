@@ -27,7 +27,7 @@ class PortfolioPaperTrader:
                  max_concurrent_positions: int = None, lookback: int = 200,
                  max_correlation_for_new_position: float = None, correlation_lookback: int = 30,
                  momentum_lookback: int = 20, max_total_drawdown_pct: float = None,
-                 slippage_pct: float = 0.0):
+                 slippage_pct: float = 0.0, max_position_pct_of_equity: float = None):
         self.exchange = data.get_exchange(exchange_id)
         self.symbols = symbols
         self.timeframe = timeframe
@@ -44,6 +44,7 @@ class PortfolioPaperTrader:
         except Exception:
             self.min_order_limits = {}
         self.risk_per_trade_pct = risk_per_trade_pct
+        self.max_position_pct_of_equity = max_position_pct_of_equity
         self.max_concurrent_positions = max_concurrent_positions
         self.max_correlation_for_new_position = max_correlation_for_new_position
         self.correlation_lookback = correlation_lookback
@@ -174,6 +175,7 @@ class PortfolioPaperTrader:
                 available_cash = self.cash / (1 + self.fee_pct)
                 limits = self.min_order_limits.get(s, {})
                 qty = position_size(equity_now, self.risk_per_trade_pct, fill_price, stop_distance, available_cash,
+                                     max_position_pct_of_equity=self.max_position_pct_of_equity,
                                      min_amount=limits.get("min_amount"), min_cost=limits.get("min_cost"))
 
                 if qty > 0:

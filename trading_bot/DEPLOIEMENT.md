@@ -74,6 +74,7 @@ create table if not exists public.tradingbot_errors (
 create table if not exists public.tradingbot_config (
   id text primary key default 'default',
   risk_per_trade_pct numeric,
+  max_position_pct_of_equity numeric,
   max_daily_loss_pct numeric,
   max_total_drawdown_pct numeric,
   max_correlation_for_new_position numeric,
@@ -173,7 +174,8 @@ pratique pour réagir vite si quelque chose mérite d'être resserré.
 Une valeur laissée à `null` (ou la colonne absente de la mise à jour)
 veut dire "garde celle de `config.yaml`".
 
-Colonnes disponibles : `risk_per_trade_pct`, `max_daily_loss_pct`,
+Colonnes disponibles : `risk_per_trade_pct`, `max_position_pct_of_equity`,
+`max_daily_loss_pct`,
 `max_total_drawdown_pct`, `max_correlation_for_new_position`,
 `correlation_lookback`, `momentum_lookback`, `max_concurrent_positions`,
 et `active_symbols` (ex : `["BTC/USDT"]` pour désactiver ETH/SOL en
@@ -212,6 +214,20 @@ Editor de Supabase :
 alter table public.tradingbot_config
   add column if not exists strategy_overrides jsonb;
 ```
+
+⚠️ **Migration pour `max_position_pct_of_equity`** (plafond de
+concentration, voir README section "Gestion du risque") — même principe,
+la colonne n'existe pas dans les déploiements antérieurs :
+
+```sql
+alter table public.tradingbot_config
+  add column if not exists max_position_pct_of_equity numeric;
+```
+
+Cette colonne est **optionnelle** : tant qu'elle n'existe pas, le bot
+applique simplement la valeur de `config.yaml` (0.25) — le plafond est
+actif dans tous les cas, seule la possibilité de l'ajuster à la volée
+sans redéployer dépend de cette migration.
 
 ⚠️ **Migration pour `tradingbot_journal`** (voir section "Le bot explique
 ses décisions" plus bas) — table entièrement nouvelle, à créer une fois

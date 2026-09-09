@@ -70,7 +70,7 @@ class PortfolioBacktester:
                  slippage_pct: float = 0.0, max_concurrent_positions: int = None,
                  max_correlation_for_new_position: float = None, correlation_lookback: int = 30,
                  momentum_lookback: int = 20, max_total_drawdown_pct: float = None,
-                 min_order_limits: dict = None):
+                 min_order_limits: dict = None, max_position_pct_of_equity: float = None):
         """
         strategy_factory: fonction sans argument qui retourne une NOUVELLE
         instance de stratégie (une par symbole, cf. docstring du module).
@@ -90,6 +90,7 @@ class PortfolioBacktester:
         self.correlation_lookback = correlation_lookback
         self.momentum_lookback = momentum_lookback
         self.min_order_limits = min_order_limits or {}
+        self.max_position_pct_of_equity = max_position_pct_of_equity
         self.daily_breaker = DailyLossCircuitBreaker(max_daily_loss_pct) if max_daily_loss_pct else None
         self.total_dd_breaker = TotalDrawdownCircuitBreaker(max_total_drawdown_pct) if max_total_drawdown_pct else None
 
@@ -232,7 +233,8 @@ class PortfolioBacktester:
                     available_cash = cash / (1 + self.fee_pct)
                     limits = self.min_order_limits.get(s, {})
                     qty = position_size(equity_now, self.risk_per_trade_pct, fill_price, stop_distance, available_cash,
-                                         min_amount=limits.get("min_amount"), min_cost=limits.get("min_cost"))
+                                         min_amount=limits.get("min_amount"), min_cost=limits.get("min_cost"),
+                                         max_position_pct_of_equity=self.max_position_pct_of_equity)
 
                     if qty > 0:
                         cost = qty * fill_price
