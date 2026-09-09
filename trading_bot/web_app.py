@@ -468,12 +468,19 @@ def run_tick() -> dict:
             pnl_pct = (exit_price / pos["entry_price"] - 1) * 100
             reason_label = {"stop_loss": "stop-loss touché", "take_profit": "objectif atteint",
                             "signal": "signal de sortie"}.get(exit_reason, exit_reason)
+            # le % sur le prix ne dit pas ce que ça pèse : une position à 5%
+            # du capital et une à 25% qui bougent de -1% n'ont pas le même effet
+            pnl_usdt = (proceeds - fee) - pos["qty"] * pos["entry_price"] * (1 + fee_pct)
+            equity_impact_pct = pnl_usdt / (equity_now - pnl_usdt) * 100 if equity_now != pnl_usdt else 0.0
             db.log_journal_entry(
                 "bot",
                 f"Vente {s} : {pos['qty']:.6f} @ {exit_price:.2f} ({reason_label}), entrée à "
-                f"{pos['entry_price']:.2f} → {pnl_pct:+.2f}% avant frais.",
+                f"{pos['entry_price']:.2f} → {pnl_pct:+.2f}% sur le prix, soit {pnl_usdt:+.2f} USDT "
+                f"nets de frais ({equity_impact_pct:+.2f}% du capital). Capital après : {equity_now:.2f} USDT.",
                 data={"event": "trade", "side": "sell", "symbol": s, "reason": exit_reason,
-                      "price": exit_price, "qty": pos["qty"], "pnl_pct": pnl_pct},
+                      "price": exit_price, "qty": pos["qty"], "pnl_pct": pnl_pct,
+                      "pnl_usdt": pnl_usdt, "equity_impact_pct": equity_impact_pct,
+                      "equity_after": equity_now},
             )
 
     # 2) entrées — coupe-circuits, puis priorisation par momentum, puis
@@ -551,12 +558,29 @@ def run_tick() -> dict:
                 db.log_trade(s, "buy", fill_price, qty, "signal", cash, equity_after)
                 trades_this_tick.append({"symbol": s, "side": "buy", "price": fill_price, "reason": "signal"})
                 regime_label = "tendance (EMA/MACD/volume)" if active == "trend" else "retournement (Bollinger/RSI)"
+                # Une quantité brute ("0,01262 BTC") ne dit pas à un lecteur
+                # humain ce qu'il engage. Ces trois nombres-là, si : combien
+                # de capital part, ce que coûte le stop s'il est touché, et
+                # l'exposition totale après ce trade. C'est exactement ce qui
+                # manquait au rapport du 09/09/2026, où une position à 99,9%
+                # du capital est passée inaperçue.
+                notional = qty * fill_price
+                pct_of_equity = notional / equity_now * 100 if equity_now else 0.0
+                risk_if_stopped_pct = qty * (fill_price - stop_p) / equity_now * 100 if equity_now else 0.0
+                exposure_pct = sum(
+                    positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2)
+                ) / equity_after * 100 if equity_after else 0.0
                 db.log_journal_entry(
                     "bot",
-                    f"Achat {s} : {qty:.6f} @ {fill_price:.2f} — signal de {regime_label}, "
-                    f"stop {stop_p:.2f}, objectif {target_p:.2f}.",
+                    f"Achat {s} : {qty:.6f} @ {fill_price:.2f} = {notional:.2f} USDT, soit "
+                    f"{pct_of_equity:.1f}% du capital — signal de {regime_label}, "
+                    f"stop {stop_p:.2f}, objectif {target_p:.2f}. Si le stop est touché je perds "
+                    f"{risk_if_stopped_pct:.2f}% du capital ; exposition totale après ce trade : "
+                    f"{exposure_pct:.1f}%.",
                     data={"event": "trade", "side": "buy", "symbol": s, "regime": active,
-                          "price": fill_price, "qty": qty, "stop": stop_p, "target": target_p},
+                          "price": fill_price, "qty": qty, "stop": stop_p, "target": target_p,
+                          "notional": notional, "pct_of_equity": pct_of_equity,
+                          "risk_if_stopped_pct": risk_if_stopped_pct, "exposure_pct": exposure_pct},
                 )
 
     total_equity = cash + sum(positions[s]["qty"] * prices[s] for s in rows if positions.get(s))
@@ -577,6 +601,10 @@ def run_tick() -> dict:
         "equity": round(total_equity, 2),
         "cash": round(cash, 2),
         "open_positions": open_count,
+        # part du capital réellement engagée en marché, tous symboles
+        # confondus — visible même quand tradingbot_journal n'existe pas
+        "exposure_pct": round(
+            (total_equity - cash) / total_equity * 100 if total_equity else 0.0, 1),
         "trades_this_tick": trades_this_tick,
         "daily_breaker_tripped": daily_breaker._tripped_today,
         "total_drawdown_breaker_tripped": total_dd_breaker._tripped,
@@ -587,7 +615,7 @@ def run_tick() -> dict:
                 "risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
                 "max_correlation_for_new_position", "correlation_lookback",
                 "momentum_lookback", "max_concurrent_positions", "active_symbols",
-                "strategy_overrides",
+                "strategy_overrides", "max_position_pct_of_equity",
             )
         ),
         "active_strategy_overrides": overrides.get("strategy_overrides") or {},

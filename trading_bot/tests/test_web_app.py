@@ -495,3 +495,85 @@ def test_run_tick_journals_daily_circuit_breaker_once(monkeypatch):
     clock.idx += 5
     web_app.run_tick()
     assert len(_journal_events(fake_db, "circuit_breaker")) == 1, "déclenché déjà acquitté : pas de doublon"
+
+
+def test_buy_journal_entry_states_what_the_position_weighs(monkeypatch):
+    """Régression du rapport du 09/09/2026 : le bot annonçait "achat de
+    0,01262 BTC" sans jamais dire que c'était 99,9% du capital. Une
+    quantité brute ne permet à personne de voir une surexposition — le
+    journal doit donner le poids, le risque au stop et l'exposition."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+    clock = Clock(idx=300)
+    fake_db = FakeDB()
+    _patch_market(monkeypatch, symbols, clock)
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    for _ in range(60):
+        clock.idx += 5
+        web_app.run_tick()
+
+    buys = [e for e in _journal_events(fake_db, "trade") if e["data"]["side"] == "buy"]
+    assert buys, "le scénario doit produire au moins un achat"
+    for e in buys:
+        d = e["data"]
+        assert 0 < d["pct_of_equity"] <= 100
+        assert d["notional"] == pytest.approx(d["qty"] * d["price"])
+        # le risque annoncé doit être cohérent avec la distance au stop
+        equity = d["notional"] / d["pct_of_equity"] * 100
+        assert d["risk_if_stopped_pct"] == pytest.approx(
+            d["qty"] * (d["price"] - d["stop"]) / equity * 100, rel=1e-6)
+        # le risque au stop doit rester sous le budget de risque configuré
+        assert d["risk_if_stopped_pct"] <= cfg["risk"]["risk_per_trade_pct"] * 100 + 1e-6
+        assert 0 <= d["exposure_pct"] <= 100 + 1e-9
+        # ...et le message lisible doit porter ces nombres, pas seulement le data
+        assert "% du capital" in e["message"]
+        assert "exposition totale" in e["message"]
+
+
+def test_buy_journal_reports_concentration_faithfully_when_capped(monkeypatch):
+    """Le poids annoncé doit refléter le plafond réellement appliqué : sans
+    plafond la position peut monter à ~100% du capital, avec plafond elle
+    doit être annoncée à sa taille plafonnée."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    symbols = cfg["portfolio"]["symbols"]
+
+    def _run(cap):
+        clock = Clock(idx=300)
+        fake_db = FakeDB(overrides={"max_position_pct_of_equity": cap} if cap else None)
+        _patch_market(monkeypatch, symbols, clock)
+        monkeypatch.setattr(web_app, "db", fake_db)
+        for _ in range(60):
+            clock.idx += 5
+            web_app.run_tick()
+        return [e["data"]["pct_of_equity"]
+                for e in _journal_events(fake_db, "trade") if e["data"]["side"] == "buy"]
+
+    capped = _run(0.10)
+    assert capped, "le scénario doit produire au moins un achat"
+    assert max(capped) <= 10.0 + 1e-6, f"plafond 10% non respecté : {max(capped):.1f}%"
+
+
+def test_tick_response_exposes_total_exposure(monkeypatch):
+    """L'exposition doit être lisible dans /tick même si tradingbot_journal
+    n'existe pas encore (log_journal_entry est best-effort et silencieux)."""
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    clock = Clock(idx=300)
+    fake_db = FakeDB()
+    _patch_market(monkeypatch, cfg["portfolio"]["symbols"], clock)
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    seen_invested = False
+    for _ in range(60):
+        clock.idx += 5
+        result = web_app.run_tick()
+        assert 0 <= result["exposure_pct"] <= 100 + 1e-9
+        if result["open_positions"] > 0:
+            assert result["exposure_pct"] > 0
+            seen_invested = True
+        else:
+            assert result["exposure_pct"] == pytest.approx(0.0, abs=1e-9)
+    assert seen_invested, "le scénario doit ouvrir au moins une position"
