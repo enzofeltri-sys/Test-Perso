@@ -26,6 +26,7 @@ Aucun ordre réel n'est jamais envoyé par ce module. Variables
 d'environnement requises : voir supabase_state.py et render.yaml.
 """
 
+import hmac
 import json
 import os
 import traceback
@@ -33,7 +34,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import yaml
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 
 import data
 import supabase_state as db
@@ -770,6 +771,63 @@ def tick():
         # inutiles — l'erreur est déjà tracée pour le point de
         # supervision quotidien.
         return jsonify({"ok": False, "error": str(e)}), 200
+
+
+@app.route("/alert-test")
+def alert_test():
+    """Envoie une alerte de test et dit précisément ce qui s'est passé.
+
+    Pourquoi cet endpoint existe : un système d'alerte qu'on n'a jamais vu
+    se déclencher n'est pas un système d'alerte, c'est une croyance d'être
+    couvert. Le jour où le coupe-circuit tombe n'est pas le bon moment
+    pour découvrir que l'URL du webhook était mal collée. Il sert aussi
+    après coup, à chaque rotation de webhook ou changement de service.
+
+    Protection : un jeton dans l'URL (`ALERT_TEST_TOKEN`), parce que le
+    service est ouvert à tous. Sans ce jeton configuré, l'endpoint
+    n'existe pas — un jeton par défaut serait pire que pas de jeton du
+    tout. Le jeton apparaît dans les logs d'accès Render, ce qui est
+    acceptable ici : il ne donne le droit que d'envoyer un message de
+    test vers TON propre webhook, rien d'autre. Il ne touche ni à l'état
+    du bot, ni aux positions, ni à la config.
+    """
+    expected = os.environ.get("ALERT_TEST_TOKEN")
+    if not expected:
+        return jsonify({
+            "ok": False,
+            "error": "endpoint désactivé : ALERT_TEST_TOKEN n'est pas défini sur ce service",
+        }), 404
+
+    # comparaison à temps constant : ne fuite pas le jeton caractère par
+    # caractère via le temps de réponse
+    if not hmac.compare_digest(request.args.get("token", ""), expected):
+        return jsonify({"ok": False, "error": "jeton invalide"}), 403
+
+    # distinguer les deux échecs possibles est TOUT l'intérêt du test :
+    # "webhook pas configuré" et "configuré mais l'envoi a échoué" se
+    # corrigent de façon complètement différente
+    if not alerts.is_configured():
+        return jsonify({
+            "ok": False,
+            "alert_configured": False,
+            "error": "ALERT_WEBHOOK_URL n'est pas définie sur ce service — "
+                     "aucune alerte ne partira, y compris les vraies",
+        }), 200
+
+    sent = alerts.send(
+        f"Test manuel des alertes ({datetime.now(timezone.utc).strftime('%d/%m %H:%M')} UTC). "
+        "Si tu lis ceci, la chaîne d'alerte fonctionne de bout en bout : "
+        "les vraies alertes (coupe-circuit, cycle planté, données inaccessibles) "
+        "arriveront par ce même canal. Aucun impact sur le bot.",
+        alerts.INFO,
+    )
+    return jsonify({
+        "ok": sent,
+        "alert_configured": True,
+        "message": "alerte de test envoyée — vérifie ton canal" if sent else
+                   "ALERT_WEBHOOK_URL est définie mais l'envoi a échoué : "
+                   "URL invalide, webhook supprimé, ou service injoignable",
+    }), 200
 
 
 if __name__ == "__main__":

@@ -216,3 +216,78 @@ def test_a_failing_webhook_never_breaks_a_cycle(monkeypatch):
 
     clock.idx += 5
     assert web_app.run_tick()["ok"] is True
+
+
+# --------------------------------------------------------------------
+# /alert-test — vérifier la chaîne AVANT d'en avoir besoin
+# --------------------------------------------------------------------
+
+def _client():
+    return web_app.app.test_client()
+
+
+def test_alert_test_endpoint_does_not_exist_without_a_token(monkeypatch):
+    """Pas de jeton par défaut : sans ALERT_TEST_TOKEN, l'endpoint n'existe
+    pas. Un jeton par défaut serait pire que pas de jeton du tout."""
+    monkeypatch.delenv("ALERT_TEST_TOKEN", raising=False)
+    resp = _client().get("/alert-test")
+    assert resp.status_code == 404
+    assert resp.get_json()["ok"] is False
+
+
+def test_alert_test_endpoint_rejects_a_wrong_token(monkeypatch):
+    monkeypatch.setenv("ALERT_TEST_TOKEN", "le-bon-jeton")
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "https://discord.com/api/webhooks/x/y")
+    sent = _capture(monkeypatch)
+
+    assert _client().get("/alert-test").status_code == 403                    # absent
+    assert _client().get("/alert-test?token=").status_code == 403             # vide
+    assert _client().get("/alert-test?token=mauvais").status_code == 403      # faux
+    assert sent == [], "aucune alerte ne doit partir sans le bon jeton"
+
+
+def test_alert_test_endpoint_sends_with_the_right_token(monkeypatch):
+    monkeypatch.setenv("ALERT_TEST_TOKEN", "le-bon-jeton")
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "https://discord.com/api/webhooks/x/y")
+    sent = _capture(monkeypatch)
+
+    resp = _client().get("/alert-test?token=le-bon-jeton")
+    body = resp.get_json()
+    assert resp.status_code == 200
+    assert body["ok"] is True and body["alert_configured"] is True
+    assert len(sent) == 1
+    assert alerts.INFO in sent[0]["json"]["content"]
+    assert "Test manuel" in sent[0]["json"]["content"]
+
+
+def test_alert_test_endpoint_distinguishes_the_two_failure_modes(monkeypatch):
+    """« webhook pas configuré » et « configuré mais l'envoi échoue » se
+    corrigent différemment — les confondre viderait le test de son sens."""
+    monkeypatch.setenv("ALERT_TEST_TOKEN", "le-bon-jeton")
+
+    # 1) pas configuré du tout
+    monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
+    body = _client().get("/alert-test?token=le-bon-jeton").get_json()
+    assert body["ok"] is False and body["alert_configured"] is False
+    assert "ALERT_WEBHOOK_URL" in body["error"]
+
+    # 2) configuré, mais le service refuse
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "https://discord.com/api/webhooks/x/y")
+    _capture(monkeypatch, status=404)
+    body = _client().get("/alert-test?token=le-bon-jeton").get_json()
+    assert body["ok"] is False and body["alert_configured"] is True
+    assert "échoué" in body["message"]
+
+
+def test_alert_test_endpoint_never_touches_the_bot(monkeypatch):
+    """Le test doit être inoffensif : aucun état, aucune position, aucune
+    config ne doit bouger."""
+    monkeypatch.setenv("ALERT_TEST_TOKEN", "le-bon-jeton")
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "https://discord.com/api/webhooks/x/y")
+    _capture(monkeypatch)
+    db = FakeDB()
+    monkeypatch.setattr(web_app, "db", db)
+
+    _client().get("/alert-test?token=le-bon-jeton")
+
+    assert db.state is None and db.trades == [] and db.journal == [] and db.errors == []

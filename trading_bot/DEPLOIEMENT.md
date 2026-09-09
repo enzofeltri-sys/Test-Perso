@@ -394,6 +394,41 @@ tait plutôt que de risquer une alerte toutes les cinq minutes.
 best-effort avec un timeout de 10 s ; si le webhook est lent, cassé ou
 mal configuré, le trading continue et l'erreur est simplement avalée.
 
+### Vérifier la chaîne d'alerte — `/alert-test`
+
+Un système d'alerte qu'on n'a jamais vu se déclencher n'est pas un système
+d'alerte : c'est une croyance d'être couvert. Le jour où le coupe-circuit
+tombe n'est pas le bon moment pour découvrir que l'URL était mal collée.
+
+Ajoute une deuxième variable d'environnement sur Render, `ALERT_TEST_TOKEN`,
+avec une valeur longue et aléatoire de ton choix, puis ouvre :
+
+```
+https://test-perso.onrender.com/alert-test?token=TON_JETON
+```
+
+Une alerte de test part vers ton canal, et la réponse JSON distingue
+précisément les deux pannes possibles — qui ne se corrigent pas du tout
+de la même façon :
+
+| Réponse | Ce que ça veut dire |
+|---|---|
+| `ok: true` | La chaîne fonctionne de bout en bout. |
+| `alert_configured: false` | `ALERT_WEBHOOK_URL` n'est pas définie : **aucune** alerte ne partira, y compris les vraies. |
+| `ok: false` + `alert_configured: true` | URL définie mais l'envoi échoue : URL invalide, webhook supprimé, ou service injoignable. |
+| HTTP 404 | `ALERT_TEST_TOKEN` n'est pas défini — l'endpoint est désactivé. |
+| HTTP 403 | Mauvais jeton. |
+
+Sans `ALERT_TEST_TOKEN`, l'endpoint n'existe pas : il n'y a **pas** de
+jeton par défaut, qui serait pire que pas de jeton du tout. Le jeton
+apparaît dans les logs d'accès Render — acceptable ici, puisqu'il ne
+donne le droit que d'envoyer un message de test vers ton propre webhook.
+Cet endpoint ne touche ni à l'état du bot, ni aux positions, ni à la
+config (c'est testé).
+
+Garde-le pour plus tard : il resservira à chaque rotation de webhook ou
+changement de service de notification.
+
 ## 4. Vérifier que ça tourne
 
 - **Historique des trades** : dans Supabase, `Table Editor →
