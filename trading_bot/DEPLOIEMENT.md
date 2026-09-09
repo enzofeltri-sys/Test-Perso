@@ -429,6 +429,34 @@ config (c'est testé).
 Garde-le pour plus tard : il resservira à chaque rotation de webhook ou
 changement de service de notification.
 
+### Lister les salons d'un serveur Discord — `/discord-channels`
+
+Différence avec l'alerte ci-dessus : un webhook Discord ne sait qu'ÉCRIRE
+dans le salon où il a été créé, il ne peut pas dire quels autres salons
+existent sur le serveur. Pour ça il faut un vrai bot :
+
+1. [discord.com/developers/applications](https://discord.com/developers/applications)
+   → New Application → onglet **Bot** → Reset Token → copie le token.
+2. Invite ce bot sur ton serveur (onglet **OAuth2 → URL Generator**, coche
+   `bot` puis au minimum la permission `View Channels`), avec l'URL générée.
+3. Active le mode développeur Discord (Réglages → Avancés), clic droit sur
+   l'icône du serveur → Copier l'ID du serveur.
+4. Sur Render, ajoute `DISCORD_BOT_TOKEN` (le token du bot) et
+   `DISCORD_GUILD_ID` (l'ID du serveur), puis redéploie.
+
+Ouvre ensuite (même jeton que `/alert-test`, `ALERT_TEST_TOKEN`) :
+
+```
+https://test-perso.onrender.com/discord-channels?token=TON_JETON
+```
+
+La réponse liste les salons dans l'ordre où Discord les affiche
+(`{"ok": true, "channels": [{"id", "name", "type", "position"}, ...]}`).
+Sans `DISCORD_BOT_TOKEN`/`DISCORD_GUILD_ID`, `ok` vaut `false` en le
+disant explicitement plutôt que de planter. Comme `/alert-test`, cet
+endpoint est en lecture seule : il ne touche ni à l'état du bot, ni aux
+positions, ni à la config.
+
 ## 4. Vérifier que ça tourne
 
 - **Historique des trades** : dans Supabase, `Table Editor →

@@ -39,6 +39,7 @@ from flask import Flask, jsonify, render_template_string, request
 import data
 import supabase_state as db
 import alerts
+import discord_bot
 from strategy import regime_strategy_from_config
 from risk import position_size, DailyLossCircuitBreaker, TotalDrawdownCircuitBreaker
 from walk_forward import _apply_overrides as _apply_strategy_param_overrides
@@ -828,6 +829,38 @@ def alert_test():
                    "ALERT_WEBHOOK_URL est définie mais l'envoi a échoué : "
                    "URL invalide, webhook supprimé, ou service injoignable",
     }), 200
+
+
+@app.route("/discord-channels")
+def discord_channels():
+    """Liste les salons du serveur Discord configuré (DISCORD_BOT_TOKEN +
+    DISCORD_GUILD_ID) — sert à vérifier que le bot est bien invité sur le
+    bon serveur, avant de s'en servir pour autre chose.
+
+    Même protection que /alert-test (jeton dans l'URL, endpoint absent sans
+    lui) : le service est ouvert à tous, et un jeton par défaut serait pire
+    que pas de jeton du tout."""
+    expected = os.environ.get("ALERT_TEST_TOKEN")
+    if not expected:
+        return jsonify({
+            "ok": False,
+            "error": "endpoint désactivé : ALERT_TEST_TOKEN n'est pas défini sur ce service",
+        }), 404
+
+    if not hmac.compare_digest(request.args.get("token", ""), expected):
+        return jsonify({"ok": False, "error": "jeton invalide"}), 403
+
+    if not discord_bot.is_configured():
+        return jsonify({
+            "ok": False,
+            "error": "DISCORD_BOT_TOKEN et/ou DISCORD_GUILD_ID ne sont pas définis sur ce service",
+        }), 200
+
+    try:
+        channels = discord_bot.list_channels()
+        return jsonify({"ok": True, "channels": channels}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"impossible de lister les salons : {e}"}), 200
 
 
 if __name__ == "__main__":
