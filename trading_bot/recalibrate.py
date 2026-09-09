@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 
 import yaml
 
+import alerts
 import data
 import supabase_state as db
 from main import _fetch_portfolio_history
@@ -241,6 +242,13 @@ def main():
                 f"Recalibrage : échec inattendu ({e}) — voir tradingbot_errors pour la trace complète. "
                 "Aucun changement appliqué.",
             )
+        # le recalibrage ne tourne qu'une fois par mois : un échec silencieux
+        # se découvre le mois suivant, voire jamais
+        alerts.send(
+            f"Le recalibrage mensuel a échoué : {e}. Aucun paramètre n'a été modifié, "
+            f"le bot continue avec les réglages en place (trace dans tradingbot_errors).",
+            alerts.WARNING,
+        )
         print(f"ERREUR : {e}", file=sys.stderr)
         sys.exit(1)
 

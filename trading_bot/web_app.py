@@ -37,6 +37,7 @@ from flask import Flask, jsonify, render_template_string
 
 import data
 import supabase_state as db
+import alerts
 from strategy import regime_strategy_from_config
 from risk import position_size, DailyLossCircuitBreaker, TotalDrawdownCircuitBreaker
 from walk_forward import _apply_overrides as _apply_strategy_param_overrides
@@ -295,6 +296,44 @@ def _apply_strategy_overrides(base_strategy_cfg: dict, strategy_overrides: dict)
     return _apply_strategy_param_overrides(base_strategy_cfg, strategy_overrides or {})
 
 
+# Fenêtre pendant laquelle une nouvelle erreur ne redéclenche PAS d'alerte.
+# Sans elle, un exchange injoignable pendant six heures enverrait 72
+# notifications (une par tick) — et on apprendrait à les ignorer.
+ERROR_ALERT_COOLDOWN_MINUTES = 60
+
+
+def _is_new_error_episode() -> bool:
+    """True si aucune erreur n'a été enregistrée dans la dernière heure.
+
+    Déduplication SANS état en mémoire : ce module est relancé à chaque
+    /tick (rien ne survit d'un cycle à l'autre), donc on lit l'horodatage
+    de la dernière erreur déjà en base plutôt que de tenir un compteur
+    qui serait perdu à chaque fois.
+
+    En cas de doute — table illisible, horodatage inexploitable — on
+    retourne False : mieux vaut manquer une alerte que d'en envoyer une
+    toutes les cinq minutes, parce qu'une alerte qu'on apprend à ignorer
+    ne protège plus de rien.
+    """
+    try:
+        recent = db.get_recent_errors(limit=1)
+    except Exception:
+        return False
+    if not recent:
+        return True
+    raw_ts = recent[0].get("ts")
+    if not raw_ts:
+        return False
+    try:
+        last = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    age_minutes = (datetime.now(timezone.utc) - last).total_seconds() / 60
+    return age_minutes >= ERROR_ALERT_COOLDOWN_MINUTES
+
+
 CONFIG_OVERRIDE_KEYS = (
     "risk_per_trade_pct", "max_daily_loss_pct", "max_total_drawdown_pct",
     "max_position_pct_of_equity",
@@ -398,8 +437,21 @@ def run_tick() -> dict:
         except Exception as e:
             fetch_errors.append(f"{s}: {e}")
 
+    new_error_episode = False
+    if fetch_errors:
+        # vérifié AVANT d'écrire celles de ce tick, sinon elles compteraient
+        # elles-mêmes comme "une erreur récente" et rien n'alerterait jamais
+        new_error_episode = _is_new_error_episode()
     for msg in fetch_errors:
         db.log_error(f"Erreur récupération des données — {msg}")
+    if new_error_episode:
+        alerts.send(
+            f"{len(fetch_errors)} paire(s) impossibles à récupérer ce cycle : "
+            f"{'; '.join(fetch_errors)[:600]}. Le bot continue avec les paires "
+            f"disponibles. Prochaine alerte au plus tôt dans "
+            f"{ERROR_ALERT_COOLDOWN_MINUTES} min.",
+            alerts.WARNING,
+        )
 
     if not rows:
         return {"ok": True, "note": "pas assez de données ce cycle", "errors": fetch_errors}
@@ -424,6 +476,14 @@ def run_tick() -> dict:
             "entrée aujourd'hui, les positions ouvertes restent gérées normalement.",
             data={"event": "circuit_breaker", "kind": "daily", "equity": equity},
         )
+        alerts.send(
+            f"Coupe-circuit JOURNALIER déclenché : capital {equity:.2f} USDT contre "
+            f"{daily_breaker._equity_at_day_start:.2f} en début de journée "
+            f"(seuil -{risk_cfg['max_daily_loss_pct'] * 100:.0f}%). Aucune nouvelle entrée "
+            f"aujourd'hui ; les positions ouvertes restent gérées normalement. "
+            f"Remise à zéro automatique demain.",
+            alerts.WARNING,
+        )
     if total_dd_breaker._tripped and not total_was_tripped:
         db.log_journal_entry(
             "bot",
@@ -433,6 +493,16 @@ def run_tick() -> dict:
             "entrée tant qu'un humain n'a pas révisé la situation — ce coupe-circuit ne se "
             "réarme jamais tout seul.",
             data={"event": "circuit_breaker", "kind": "total_drawdown", "equity": equity},
+        )
+        # celui-ci ne se réarme JAMAIS tout seul (voir risk.py) : il demande
+        # une décision humaine, c'est donc la seule alerte critique du bot
+        alerts.send(
+            f"Coupe-circuit de DRAWDOWN TOTAL déclenché : capital {equity:.2f} USDT, plus haut "
+            f"historique {total_dd_breaker._peak_equity:.2f} "
+            f"(seuil -{risk_cfg['max_total_drawdown_pct'] * 100:.0f}%). Le bot n'ouvrira PLUS "
+            f"aucune position tant qu'un humain n'a pas revu la stratégie — ce coupe-circuit "
+            f"ne se réarme pas tout seul.",
+            alerts.CRITICAL,
         )
 
     trades_this_tick = []
@@ -683,7 +753,18 @@ def tick():
         result = run_tick()
         return jsonify(result), 200
     except Exception as e:
+        # ordre volontaire : la trace part en base d'abord (source de vérité),
+        # l'alerte ensuite — et la dédup se lit AVANT d'écrire, sinon
+        # l'erreur qu'on vient d'écrire masquerait son propre épisode
+        new_episode = _is_new_error_episode()
         db.log_error(f"Erreur non gérée dans /tick : {e}\n{traceback.format_exc()}")
+        if new_episode:
+            alerts.send(
+                f"Le cycle de trading a planté : {e}. Le bot ne tradera plus tant que "
+                f"l'erreur persiste (trace complète dans tradingbot_errors). Prochaine "
+                f"alerte au plus tôt dans {ERROR_ALERT_COOLDOWN_MINUTES} min.",
+                alerts.CRITICAL,
+            )
         # HTTP 200 volontaire : une erreur ici ne doit pas faire croire à
         # UptimeRobot que le service est "down" et générer des alertes
         # inutiles — l'erreur est déjà tracée pour le point de

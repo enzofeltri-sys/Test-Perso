@@ -15,6 +15,8 @@ RegimeSwitchingStrategy.compute_stop_and_target() doit être appelé sur le
 wrapper, pas sur une sous-stratégie choisie à la main AVANT confirmation).
 """
 
+from datetime import datetime, timezone
+
 import pytest
 import yaml
 
@@ -29,6 +31,9 @@ class FakeDB:
         self.errors = []
         self.journal = []
         self.overrides = overrides or {}
+        # lignes renvoyées par get_recent_errors() — sert à simuler des
+        # erreurs déjà horodatées en base (déduplication des alertes)
+        self.errors_rows = []
 
     def load_state(self, initial_balance):
         if self.state is None:
@@ -51,6 +56,13 @@ class FakeDB:
 
     def log_error(self, message):
         self.errors.append(message)
+        # en base, log_error() et get_recent_errors() touchent la MÊME table
+        # (tradingbot_errors) : le faux doit refléter ce couplage, sinon la
+        # déduplication des alertes semblerait cassée alors qu'elle marche
+        # (get_recent_errors trie par ts décroissant -> insertion en tête)
+        self.errors_rows.insert(0, {
+            "ts": datetime.now(timezone.utc).isoformat(), "message": message,
+        })
 
     def load_config_overrides(self):
         return self.overrides
@@ -59,7 +71,7 @@ class FakeDB:
         return list(reversed(self.trades))[:limit]
 
     def get_recent_errors(self, limit=5):
-        return []
+        return self.errors_rows[:limit]
 
     def get_recent_journal(self, limit=10):
         return list(reversed(self.journal))[:limit]

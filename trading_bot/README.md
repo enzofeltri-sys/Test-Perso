@@ -162,6 +162,21 @@ concentration :
   l'exchange ne publie pas ces limites pour une paire, aucun plancher
   n'est appliqué pour cette paire.
 
+### 3bis. Supervision (`alerts.py`)
+
+`/tick` répond `200` même en erreur (pour ne pas faire croire à une panne
+d'hébergement), donc un moniteur d'uptime ne peut rien détecter de ce qui
+compte. `alerts.py` envoie une notification (Discord, Slack ou Telegram,
+via `ALERT_WEBHOOK_URL`) sur les seuls événements qui demandent un
+humain : coupe-circuit déclenché, cycle planté, données inaccessibles,
+recalibrage mensuel en échec. Pas les trades ordinaires — une alerte par
+trade devient un bruit qu'on ignore.
+
+Deux règles : ne jamais faire échouer un cycle (tout est best-effort,
+timeout 10 s), et ne jamais spammer (alerte à la transition pour les
+coupe-circuits, une fois par heure pour les erreurs ; en cas de doute sur
+la déduplication, le bot se tait). Non configuré = inerte.
+
 ### 4. Validation — la partie qui compte vraiment
 
 Un backtest classique répond à "comment cette stratégie aurait performé

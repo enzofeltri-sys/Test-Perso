@@ -340,6 +340,60 @@ Pour effectivement CADRER le bot (pas juste commenter), c'est
 `tradingbot_config` qu'il faut modifier (section 3bis) — le journal ne
 fait qu'expliquer et discuter, il ne pilote rien.
 
+## 3quinquies. Être prévenu quand ça va mal — alertes
+
+UptimeRobot ne sait qu'une chose : « le service répond ». Or `/tick`
+répond volontairement `200` même en cas d'erreur (voir plus bas), donc un
+coupe-circuit déclenché à 3h du matin ou un exchange injoignable pendant
+six heures passeraient inaperçus jusqu'à ta prochaine visite de la page
+de statut. C'est ce que ces alertes couvrent.
+
+**Étape unique** : ajoute la variable d'environnement `ALERT_WEBHOOK_URL`
+sur Render (Environment → Add Environment Variable), puis redéploie.
+Sans elle, le module est inerte et le bot tourne exactement comme avant.
+
+Selon le service que tu préfères :
+
+| Service  | Ce que tu colles dans `ALERT_WEBHOOK_URL`            | En plus |
+|----------|------------------------------------------------------|---------|
+| Discord  | Paramètres du salon → Intégrations → Webhooks → Nouveau webhook → Copier l'URL | — |
+| Slack    | api.slack.com/messaging/webhooks → URL du webhook entrant | — |
+| Telegram | `https://api.telegram.org/bot<TOKEN>/sendMessage` (TOKEN donné par @BotFather) | `ALERT_CHAT_ID` = ton identifiant de discussion |
+
+Le corps envoyé contient à la fois `content` (lu par Discord) et `text`
+(lu par Slack) : chacun ignore la clé de l'autre, donc la même URL marche
+sans réglage supplémentaire.
+
+**Ce qui déclenche une alerte** — uniquement ce qui demande un œil humain :
+
+- 🛑 **Coupe-circuit de drawdown total** — le bot n'ouvrira plus aucune
+  position tant que tu n'as pas revu la stratégie ; il ne se réarme pas
+  tout seul, par conception.
+- 🛑 **Cycle de trading planté** — une exception non gérée dans `/tick`.
+- ⚠️ **Coupe-circuit journalier** — plus d'entrées aujourd'hui, remise à
+  zéro automatique demain.
+- ⚠️ **Données inaccessibles** — une ou plusieurs paires impossibles à
+  récupérer ; le bot continue avec celles qui répondent.
+- ⚠️ **Recalibrage mensuel en échec** — sans ça, un job qui ne tourne
+  qu'une fois par mois échoue en silence et tu le découvres le mois
+  suivant. (Pour l'avoir aussi sur GitHub Actions, ajoute le même secret
+  `ALERT_WEBHOOK_URL` au dépôt et passe-le au job, comme `SUPABASE_KEY`.)
+
+**Ce qui n'en déclenche pas** : les trades ordinaires. Ils partent dans
+`tradingbot_journal` et sur la page de statut. Une notification par trade
+deviendrait un bruit qu'on apprend à ignorer — et le jour où une alerte
+compte vraiment, on ne la lit plus.
+
+**Anti-spam** : les coupe-circuits n'alertent qu'à la *transition* (pas à
+chaque cycle tant qu'ils restent déclenchés), et les erreurs qu'une fois
+par heure (`ERROR_ALERT_COOLDOWN_MINUTES` dans `web_app.py`). En cas de
+doute — table d'erreurs illisible, horodatage inexploitable — le bot se
+tait plutôt que de risquer une alerte toutes les cinq minutes.
+
+**Garantie** : une alerte ne peut jamais faire échouer un cycle. Tout est
+best-effort avec un timeout de 10 s ; si le webhook est lent, cassé ou
+mal configuré, le trading continue et l'erreur est simplement avalée.
+
 ## 4. Vérifier que ça tourne
 
 - **Historique des trades** : dans Supabase, `Table Editor →

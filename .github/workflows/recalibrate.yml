@@ -40,4 +40,8 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # optionnel : si le secret n'existe pas, la variable est vide et
+          # alerts.py reste inerte (voir DEPLOIEMENT.md section 3quinquies)
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          ALERT_CHAT_ID: ${{ secrets.ALERT_CHAT_ID }}
         run: python recalibrate.py ${{ inputs.dry_run == true && '--dry-run' || '' }}
