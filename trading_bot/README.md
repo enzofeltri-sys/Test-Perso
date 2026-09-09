@@ -177,6 +177,15 @@ timeout 10 s), et ne jamais spammer (alerte à la transition pour les
 coupe-circuits, une fois par heure pour les erreurs ; en cas de doute sur
 la déduplication, le bot se tait). Non configuré = inerte.
 
+### 3ter. Attentes de performance (`ATTENTES.md`)
+
+Ce que la stratégie est censée produire en réel — taux de gain, nombre de
+trades, drawdown, exposition — **figé avant d'avoir observé le moindre
+trade**, avec les critères qui l'invalideraient. Son seul but est
+d'empêcher la justification a posteriori : sans prévision écrite, on
+trouve toujours une raison de trouver les résultats acceptables. Voir
+[ATTENTES.md](ATTENTES.md).
+
 ### 4. Validation — la partie qui compte vraiment
 
 Un backtest classique répond à "comment cette stratégie aurait performé
