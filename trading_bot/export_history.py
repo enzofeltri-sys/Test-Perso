@@ -29,7 +29,16 @@ def _filename(symbol: str) -> str:
     return symbol.replace("/", "-") + ".csv"
 
 
-def export_history(cfg: dict, out_dir: str) -> dict:
+def export_history(cfg: dict, out_dir: str, symbols: list = None) -> dict:
+    """`symbols`, si fourni, remplace cfg['portfolio']['symbols'] pour CET
+    export uniquement (copie locale de cfg) — jamais réécrit sur disque.
+    Sert à récupérer l'historique de paires CANDIDATES (pas encore
+    tradées en direct) sans jamais toucher au portefeuille réellement
+    déployé dans config.yaml."""
+    import copy
+    if symbols:
+        cfg = copy.deepcopy(cfg)
+        cfg["portfolio"]["symbols"] = symbols
     market_data = _fetch_portfolio_history(cfg)
     os.makedirs(out_dir, exist_ok=True)
     paths = {}
@@ -56,12 +65,18 @@ def main():
     parser = argparse.ArgumentParser(description="Exporte l'historique OHLCV du portefeuille en CSV")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--out", default="history")
+    parser.add_argument("--symbols", default=None,
+                         help="Liste de paires séparées par des virgules (ex: BTC/USDT,BNB/USDT) "
+                              "pour exporter un univers DIFFÉRENT de portfolio.symbols dans "
+                              "config.yaml — sans jamais modifier ce fichier. Sert à tester des "
+                              "paires candidates avant de les ajouter au portefeuille déployé.")
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    paths = export_history(cfg, args.out)
+    symbols = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
+    paths = export_history(cfg, args.out, symbols=symbols)
     for symbol, path in paths.items():
         print(f"{symbol} -> {path}")
 

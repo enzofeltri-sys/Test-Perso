@@ -11,7 +11,17 @@ name: Exporter l'historique OHLCV (branche history-cache)
 # être fusionnée.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: >
+          Paires séparées par des virgules (ex: BTC/USDT,ETH/USDT,BNB/USDT).
+          Vide = utilise portfolio.symbols de config.yaml (le portefeuille
+          réellement déployé). Sert à récupérer l'historique de paires
+          CANDIDATES pour les tester en walk-forward AVANT de les ajouter
+          au portefeuille déployé — n'écrit jamais dans config.yaml.
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -32,7 +42,12 @@ jobs:
 
       - name: Exporter
         working-directory: trading_bot
-        run: python export_history.py --out history
+        run: |
+          if [ -n "${{ inputs.symbols }}" ]; then
+            python export_history.py --out history --symbols "${{ inputs.symbols }}"
+          else
+            python export_history.py --out history
+          fi
 
       - name: Publier sur la branche history-cache
         run: |
