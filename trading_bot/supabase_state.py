@@ -15,6 +15,15 @@ il doit être rechargé et sauvegardé à CHAQUE appel.
 Variables d'environnement requises :
   SUPABASE_URL   ex: https://xxxx.supabase.co
   SUPABASE_KEY   clé "anon" du projet (Project Settings -> API -> Legacy anon key)
+
+Variable optionnelle :
+  TABLE_PREFIX   préfixe des tables (défaut "tradingbot" -> tradingbot_state,
+                 tradingbot_trades, ...). Sert à faire tourner PLUSIEURS bots
+                 indépendants sur le MÊME projet Supabase, chacun avec ses
+                 propres tables (ex: TABLE_PREFIX=altbot -> altbot_state,
+                 altbot_trades, ...) — voir DEPLOIEMENT.md, "Un deuxième bot
+                 en parallèle". Absent ou vide -> comportement identique à
+                 avant cette variable (préfixe "tradingbot").
 """
 
 import os
@@ -23,6 +32,14 @@ from datetime import date, datetime, timezone
 import requests
 
 STATE_ID = "default"
+
+
+def _prefix() -> str:
+    return os.environ.get("TABLE_PREFIX") or "tradingbot"
+
+
+def _table(suffix: str) -> str:
+    return f"{_prefix()}_{suffix}"
 
 
 def _headers() -> dict:
@@ -41,7 +58,7 @@ def _base_url() -> str:
 def load_state(initial_balance: float) -> dict:
     """Récupère l'état sauvegardé, ou un état initial si c'est le tout
     premier cycle (aucune ligne encore en base)."""
-    url = f"{_base_url()}/tradingbot_state"
+    url = f"{_base_url()}/{_table('state')}"
     resp = requests.get(
         url, headers=_headers(),
         params={"id": f"eq.{STATE_ID}", "select": "*"}, timeout=15,
@@ -79,7 +96,7 @@ def load_state(initial_balance: float) -> dict:
 
 def save_state(state: dict) -> None:
     """Sauvegarde (upsert) l'état courant — une seule ligne, id='default'."""
-    url = f"{_base_url()}/tradingbot_state"
+    url = f"{_base_url()}/{_table('state')}"
     day = state.get("daily_current_day")
     payload = {
         "id": STATE_ID,
@@ -100,7 +117,7 @@ def save_state(state: dict) -> None:
 
 def log_trade(symbol: str, side: str, price: float, qty: float, reason: str,
               cash_after: float, equity_after: float) -> None:
-    url = f"{_base_url()}/tradingbot_trades"
+    url = f"{_base_url()}/{_table('trades')}"
     payload = {
         "symbol": symbol, "side": side, "price": price, "qty": qty, "reason": reason,
         "cash_after": cash_after, "equity_after": equity_after,
@@ -112,7 +129,7 @@ def log_trade(symbol: str, side: str, price: float, qty: float, reason: str,
 def get_recent_trades(limit: int = 10) -> list:
     """Les derniers trades journalisés, du plus récent au plus ancien —
     utilisé par la page de statut de web_app.py."""
-    url = f"{_base_url()}/tradingbot_trades"
+    url = f"{_base_url()}/{_table('trades')}"
     resp = requests.get(
         url, headers=_headers(),
         params={"select": "*", "order": "ts.desc", "limit": str(limit)}, timeout=15,
@@ -123,7 +140,7 @@ def get_recent_trades(limit: int = 10) -> list:
 
 def get_recent_errors(limit: int = 5) -> list:
     """Les dernières erreurs journalisées, du plus récent au plus ancien."""
-    url = f"{_base_url()}/tradingbot_errors"
+    url = f"{_base_url()}/{_table('errors')}"
     resp = requests.get(
         url, headers=_headers(),
         params={"select": "*", "order": "ts.desc", "limit": str(limit)}, timeout=15,
@@ -142,7 +159,7 @@ def log_journal_entry(author: str, message: str, data: dict = None) -> None:
     libre) ; ceci est uniquement la couche de visibilité/discussion.
     Best-effort : un souci ici ne doit jamais faire planter un cycle."""
     try:
-        url = f"{_base_url()}/tradingbot_journal"
+        url = f"{_base_url()}/{_table('journal')}"
         payload = {"author": author, "message": message}
         if data is not None:
             payload["data"] = data
@@ -158,7 +175,7 @@ def get_recent_journal(limit: int = 10) -> list:
     pour la migration) : optionnelle, ne doit jamais faire échouer la page
     de statut ni un cycle."""
     try:
-        url = f"{_base_url()}/tradingbot_journal"
+        url = f"{_base_url()}/{_table('journal')}"
         resp = requests.get(
             url, headers=_headers(),
             params={"select": "*", "order": "ts.desc", "limit": str(limit)}, timeout=15,
@@ -177,7 +194,7 @@ def get_last_journal_event(event: str) -> dict:
     de journal EST l'acquittement. Best-effort ({} si la table n'existe
     pas encore)."""
     try:
-        url = f"{_base_url()}/tradingbot_journal"
+        url = f"{_base_url()}/{_table('journal')}"
         resp = requests.get(
             url, headers=_headers(),
             params={"select": "*", "data->>event": f"eq.{event}", "order": "ts.desc", "limit": "1"},
@@ -198,7 +215,7 @@ def load_config_overrides() -> dict:
     table n'existe pas encore, on se rabat silencieusement sur
     config.yaml plutôt que de faire planter le cycle."""
     try:
-        url = f"{_base_url()}/tradingbot_config"
+        url = f"{_base_url()}/{_table('config')}"
         resp = requests.get(
             url, headers=_headers(),
             params={"id": "eq.default", "select": "*"}, timeout=15,
@@ -216,7 +233,7 @@ def save_strategy_overrides(strategy_overrides: dict, note: str = None) -> None:
     jamais les colonnes de risque/active_symbols existantes, qu'un humain
     garde le contrôle total dessus. Upsert comme save_state(), donc les
     autres colonnes déjà posées à la main ne sont pas touchées."""
-    url = f"{_base_url()}/tradingbot_config"
+    url = f"{_base_url()}/{_table('config')}"
     payload = {
         "id": STATE_ID,
         "strategy_overrides": strategy_overrides,
@@ -237,7 +254,7 @@ def log_error(message: str) -> None:
     TOUT est dans le try, y compris la construction de l'URL/des headers
     (qui échoue elle-même si SUPABASE_URL/SUPABASE_KEY manquent)."""
     try:
-        url = f"{_base_url()}/tradingbot_errors"
+        url = f"{_base_url()}/{_table('errors')}"
         resp = requests.post(url, headers=_headers(), json={"message": message[:4000]}, timeout=15)
         resp.raise_for_status()
     except Exception:

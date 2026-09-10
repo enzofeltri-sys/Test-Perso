@@ -25,10 +25,14 @@ Deux règles de conception, non négociables :
    qu'à la transition, les erreurs qu'à la première d'une fenêtre de
    temps), parce que lui seul sait ce qui constitue un événement nouveau.
 
-Configuration — une seule variable d'environnement, sur Render :
+Configuration — sur Render :
 
     ALERT_WEBHOOK_URL   URL du webhook (Discord, Slack, ou Telegram)
     ALERT_CHAT_ID       uniquement pour Telegram (identifiant du destinataire)
+    BOT_LABEL           optionnel, défaut "bot de trading". Préfixe chaque
+                         alerte (ex: "bot altcoins") — utile quand PLUSIEURS
+                         bots partagent le même webhook/canal, pour savoir
+                         lequel a parlé sans deviner.
 
 Non renseignée = module inerte, le bot tourne exactement comme avant.
 C'est le comportement par défaut, y compris en test.
@@ -69,7 +73,8 @@ def send(message: str, severity: str = WARNING) -> bool:
     if not url:
         return False
     try:
-        text = f"{severity} [bot de trading] {message}"[:1900]
+        label = os.environ.get("BOT_LABEL") or "bot de trading"
+        text = f"{severity} [{label}] {message}"[:1900]
         resp = requests.post(url, json=_payload(url, text), timeout=TIMEOUT_SECONDS)
         resp.raise_for_status()
         return True

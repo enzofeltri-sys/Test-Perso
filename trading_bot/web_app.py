@@ -46,7 +46,7 @@ from walk_forward import _apply_overrides as _apply_strategy_param_overrides
 app = Flask(__name__)
 
 STATUS_PAGE = """<!doctype html>
-<title>Journal de bord — bot de trading</title>
+<title>Journal de bord — {{ bot_label }}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -122,7 +122,7 @@ STATUS_PAGE = """<!doctype html>
 
 <div class="wrap">
   <header>
-    <p class="kicker">Bot de trading crypto — paper trading</p>
+    <p class="kicker">{{ bot_label|capitalize }} — paper trading</p>
     <h1>Journal de bord</h1>
     <p class="status-line">
       <span class="dot {{ 'ok' if healthy else 'bad' }}"></span>
@@ -743,6 +743,7 @@ def health():
             symbols=cfg["portfolio"]["symbols"],
             trades=trades_view, errors=errors_view, journal=journal_view,
             strategy_overrides=strategy_overrides,
+            bot_label=os.environ.get("BOT_LABEL") or "bot de trading crypto",
         ), 200
     except Exception:
         return "OK - bot de paper trading en ligne. Utilise /tick pour déclencher un cycle.", 200
