@@ -429,6 +429,134 @@ config (c'est testé).
 Garde-le pour plus tard : il resservira à chaque rotation de webhook ou
 changement de service de notification.
 
+## 3sexies. Un deuxième bot en parallèle — comparer des paniers de paires
+
+Le code supporte plusieurs bots indépendants sur le **même** projet
+Supabase, chacun avec ses propres tables, sa propre page de statut, et
+sa propre supervision Cowork — sans rien dupliquer côté code. Chaque bot
+est une instance Render séparée pointée sur le même dépôt, distinguée
+uniquement par ses variables d'environnement.
+
+**Pourquoi** : comparer, à stratégie et règles de risque strictement
+identiques, comment le même système se comporte sur un panier de paires
+différent — c'est un outil d'apprentissage, pas une façon d'augmenter les
+gains (voir `ATTENTES.md`, qui fige les attentes de CHAQUE bot séparément
+avant de le déployer — toujours écrire cette section avant, jamais après).
+
+### Étape 1 — les tables du deuxième bot
+
+Même schéma que la section 1, avec un préfixe différent (`altbot_` pour
+le bot #2 "altcoins" — adapte le préfixe si tu déploies un bot #3) :
+
+```sql
+create table if not exists public.altbot_state (
+  id text primary key default 'default',
+  cash numeric not null,
+  positions jsonb not null default '{}'::jsonb,
+  daily_current_day date,
+  daily_equity_at_day_start numeric,
+  daily_tripped_today boolean not null default false,
+  total_dd_peak_equity numeric,
+  total_dd_tripped boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.altbot_trades (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  symbol text not null,
+  side text not null,
+  price numeric not null,
+  qty numeric not null,
+  reason text not null,
+  cash_after numeric not null,
+  equity_after numeric not null
+);
+
+create table if not exists public.altbot_errors (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  message text not null
+);
+
+create table if not exists public.altbot_config (
+  id text primary key default 'default',
+  risk_per_trade_pct numeric,
+  max_position_pct_of_equity numeric,
+  max_daily_loss_pct numeric,
+  max_total_drawdown_pct numeric,
+  max_correlation_for_new_position numeric,
+  correlation_lookback int,
+  momentum_lookback int,
+  max_concurrent_positions int,
+  active_symbols jsonb,
+  strategy_overrides jsonb,
+  note text,
+  updated_by text,
+  updated_at timestamptz not null default now()
+);
+insert into public.altbot_config (id) values ('default')
+  on conflict (id) do nothing;
+
+create table if not exists public.altbot_journal (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  author text not null check (author in ('bot', 'manager')),
+  message text not null,
+  data jsonb
+);
+
+alter table public.altbot_state enable row level security;
+alter table public.altbot_trades enable row level security;
+alter table public.altbot_errors enable row level security;
+alter table public.altbot_config enable row level security;
+alter table public.altbot_journal enable row level security;
+
+create policy "altbot_state_all" on public.altbot_state
+  for all to anon, authenticated using (true) with check (true);
+create policy "altbot_trades_all" on public.altbot_trades
+  for all to anon, authenticated using (true) with check (true);
+create policy "altbot_errors_all" on public.altbot_errors
+  for all to anon, authenticated using (true) with check (true);
+create policy "altbot_config_all" on public.altbot_config
+  for all to anon, authenticated using (true) with check (true);
+create policy "altbot_journal_all" on public.altbot_journal
+  for all to anon, authenticated using (true) with check (true);
+```
+
+### Étape 2 — le service Render
+
+Un deuxième service Web, même dépôt, même branche
+(`claude/trading-bot-test-klhktx`), même Root Directory (`trading_bot`),
+même commande de démarrage — seules les variables d'environnement
+changent :
+
+| Variable | Bot #1 (déjà en place) | Bot #2 (altcoins) |
+|---|---|---|
+| `SUPABASE_URL` / `SUPABASE_KEY` | inchangées | **identiques** (même projet) |
+| `BOT_CONFIG` | absent (défaut `config.yaml`) | `config_altbot.yaml` |
+| `TABLE_PREFIX` | absent (défaut `tradingbot`) | `altbot` |
+| `BOT_LABEL` | absent (défaut "bot de trading crypto") | `bot altcoins (BNB/XRP/LINK)` |
+| `ALERT_WEBHOOK_URL` | déjà posée | même webhook — les alertes des deux bots arrivent sur le même canal, distinguées par `BOT_LABEL` |
+| `ALERT_TEST_TOKEN` | déjà posée | un jeton DIFFÉRENT, propre à ce service |
+| `PYTHON_VERSION` | `3.11.9` | idem |
+
+### Étape 3 — UptimeRobot
+
+Un deuxième moniteur HTTP(S), même fréquence (5 min), pointé sur l'URL
+`/tick` du nouveau service Render — indépendant du moniteur du bot #1.
+
+### Étape 4 — vérifier
+
+La page de statut du bot #2 est directement à la racine de son URL
+Render (`https://<nom-du-service-2>.onrender.com/`) — c'est "la deuxième
+page" : même gabarit que le bot #1, avec son propre titre (`BOT_LABEL`)
+pour ne jamais les confondre au premier coup d'œil.
+
+`/alert-test?token=...` fonctionne pareil sur ce service, avec son
+propre `ALERT_TEST_TOKEN`.
+
+
 ## 4. Vérifier que ça tourne
 
 - **Historique des trades** : dans Supabase, `Table Editor →
