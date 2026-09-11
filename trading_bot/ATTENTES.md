@@ -156,7 +156,7 @@ _(à compléter à partir de 20 trades du bot #2 — ne rien conclure avant)_
 
 ---
 
-# Bot #3 — micro-paris diversifiés (18 paires, jusqu'à 3 rachats/paire, 10 USDT max/position)
+# Bot #3 — observatoire large (24 paires, jusqu'à 3 rachats/paire, 10 USDT max/position)
 
 Troisième bot, avec une méthode de dimensionnement VOLONTAIREMENT
 différente des bots #1 et #2 — voir DEPLOIEMENT.md, "Un troisième bot".
@@ -164,81 +164,88 @@ Au lieu de dimensionner par le risque (% du capital selon la distance du
 stop), chaque position est plafonnée à un **montant fixe** (10 USDT),
 capital de départ 1000 USDT virtuels.
 
-## v2 (11/09/2026) — rachat + panier élargi
+## v3 (11/09/2026) — panier étendu à TOUTES les paires des 3 bots
 
-Cette section **remplace** la version précédente (10 paires, jamais de
-rachat, figée le 11/09/2026 au matin — voir l'historique git de ce
-fichier pour ses chiffres exacts). Changements :
+Cette section **remplace** les versions précédentes (v1 : 10 paires,
+jamais de rachat ; v2 : 18 paires distinctes des bots #1/#2, avec rachat
+— voir l'historique git de ce fichier pour leurs chiffres exacts).
+Changement de but assumé, demandé explicitement : ce bot n'essaie plus
+d'éviter toute duplication d'exposition avec les bots #1/#2 — il devient
+un **observatoire large**, couvrant tout ce que les 3 bots suivent, pour
+apprendre comment le marché se comporte dans son ensemble avant d'affiner
+plus tard des règles plus spécifiques par paire. Argent 100% virtuel :
+dupliquer l'exposition entre bots n'a aucun coût réel.
 
-- **Rachat** : une paire peut désormais porter jusqu'à **3 positions
-  simultanées** (`max_positions_per_symbol: 3`), donc jusqu'à 30 USDT sur
-  une seule crypto au lieu de 10.
-- **Cooldown** : `reentry_cooldown_hours: 6` — aucune nouvelle entrée sur
-  une paire dans les 6h suivant la dernière activité (achat OU vente) sur
-  cette même paire. Calé sur le timeframe (bougies 1h) : assez pour ne
-  pas se refaire immédiatement dessus après un stop-loss sur le même
-  bruit, assez court pour rester dans la même tendance journalière.
-- **Panier élargi à 18 paires** (contre 10) : ADA, DOGE, AVAX, DOT, LTC,
-  TRX, ATOM, BCH, ETC, XLM, ALGO, NEAR, FIL, UNI, ICP, ARB, OP, SUI —
-  toutes DISTINCTES des paniers des bots #1 (BTC/ETH/SOL) et #2
-  (BNB/XRP/LINK), choisies parmi les cryptos les plus liquides sur OKX.
-- **`max_concurrent_positions` relevé de 10 à 25** : sans ça, chaque
-  position gardée pour un rachat aurait mangé un slot qui, avant, servait
-  à diversifier sur une paire supplémentaire — brider les deux en même
-  temps aurait vidé l'un ou l'autre de son sens.
+- **Rachat** (inchangé depuis v2) : jusqu'à **3 positions simultanées**
+  par paire (`max_positions_per_symbol: 3`), 30 USDT max sur une seule
+  crypto.
+- **Cooldown** (inchangé) : `reentry_cooldown_hours: 6`.
+- **Panier étendu à 24 paires** : les 18 de la v2 (ADA, DOGE, AVAX, DOT,
+  LTC, TRX, ATOM, BCH, ETC, XLM, ALGO, NEAR, FIL, UNI, ICP, ARB, OP, SUI)
+  **+ les 6 des bots #1/#2** (BTC, ETH, SOL, BNB, XRP, LINK).
+- **`max_concurrent_positions` inchangé à 25** : déjà la contrainte la
+  plus stricte — le plein backtest confirme qu'elle est bien atteinte au
+  moins une fois sur l'année (voir provenance ci-dessous), donc pas
+  besoin de la relever pour l'instant.
 
 ## Provenance des chiffres
 
-Walk-forward sur un an de données réelles OKX (les 18 paires ci-dessus,
+Walk-forward sur un an de données réelles OKX (les 24 paires ci-dessus,
 en 1h), 9 fenêtres hors-échantillon de 30 jours, entraînement sur 90
-jours glissants. Historique exporté via GitHub Actions run `34586668527`
-le 11/09/2026, calcul local sur le commit `6415794` (celui qui introduit
-le mécanisme générique `max_positions_per_symbol`/`reentry_cooldown_hours`,
-juste avant ce commit-ci qui l'applique au bot #3).
+jours glissants. Historique exporté via GitHub Actions run `34587972254`
+le 11/09/2026, calcul local sur le commit `3f07ba1` (celui qui applique
+le panier à 24 paires au bot #3).
 
 Deux invariants vérifiés indépendamment sur les trades produits par CE
-run (pas seulement testés sur des données synthétiques) : jamais plus de
-3 positions simultanées sur une même paire, jamais un rachat à moins de
-6h de la dernière activité sur cette paire — 0 violation sur les deux.
+run (pas seulement testés sur des données synthétiques), sur le plein
+backtest (les 24 paires, un an, hors walk-forward) : jamais plus de 3
+positions simultanées sur une même paire, jamais un rachat à moins de 6h
+de la dernière activité sur cette paire — 0 violation sur les deux ; le
+plafond global de 25 positions simultanées est atteint au moins une fois
+sur l'année (confirme qu'il est bien la contrainte active, pas un
+plafond surdimensionné qui ne sert jamais).
 
-Résultat agrégé : **−1,25%** composé sur les 9 fenêtres (contre −0,54%
-pour la v1 à 10 paires/pas de rachat), pendant que le buy & hold moyen de
-ces 18 paires faisait **−30,74%**. **830 trades** (~92,2/mois — bien plus
-que les ~36,6/mois de la v1 : panier 1,8x plus large, jusqu'à 3 positions
-par paire, cooldown de seulement 6h), taux de gain 34,3% (identique à la
-v1), pire drawdown **−1,09%** (contre −0,53% pour la v1 — le rachat
-augmente mécaniquement l'exposition maximale possible sur une paire,
-30 USDT contre 10, donc un peu plus de capital en jeu au pire moment).
-Sorties : 65,5% stop-loss, 34,2% objectif, 0,2% signal.
+Résultat agrégé : **−1,36%** composé sur les 9 fenêtres (contre −1,25%
+pour la v2 à 18 paires, −0,54% pour la v1 à 10 paires/pas de rachat),
+pendant que le buy & hold moyen de ces 24 paires faisait **−26,95%**.
+**963 trades** (~107/mois — encore plus que les ~92/mois de la v2, panier
+1,33x plus large), taux de gain 34,9% (proche de la v2), pire drawdown
+**−1,63%** (contre −1,09% pour la v2 — plus de paires actives en même
+temps, plus d'occasions d'atteindre le plafond de 25 positions au même
+moment, donc un peu plus de capital en jeu au pire moment). Sorties :
+65,0% stop-loss, 34,7% objectif, 0,3% signal.
 
 ## ⚠️ Ce que ce résultat NE prouve PAS
 
-Comme pour la v1, le drawdown encore petit en valeur absolue (−1,09%,
-contre −3,2% pour le bot #1 et −5,1% pour le bot #2) reste **en grande
-partie un effet mécanique** du plafond à 10 USDT/position — même avec le
-rachat, l'exposition maximale théorique par paire (30 USDT) reste minime
-face au capital total (1000 USDT). Ne jamais présenter "petit drawdown"
-comme une victoire de la stratégie sur ce bot. Ce qui a changé par
-rapport à la v1 : le rendement composé est PLUS négatif (−1,25% contre
-−0,54%) et le pire drawdown PLUS profond (−1,09% contre −0,53%) — le
-rachat n'a pas amélioré le résultat sur cette période, il a surtout
-multiplié le nombre de trades. Ce bot mesure toujours le comportement
-RELATIF de la stratégie sur un large panier (et maintenant, avec rachat)
-— utile pour apprendre, pas pour juger si "racheter marche mieux".
+Comme pour les versions précédentes, le drawdown encore petit en valeur
+absolue (−1,63%, contre −3,2% pour le bot #1 et −5,1% pour le bot #2)
+reste **en grande partie un effet mécanique** du plafond à 10 USDT/
+position — même avec le rachat et 24 paires actives, l'exposition
+maximale théorique reste minime face au capital total (1000 USDT). Ne
+jamais présenter "petit drawdown" comme une victoire de la stratégie sur
+ce bot. La tendance se confirme version après version : plus le panier
+s'élargit (10 → 18 → 24) et plus le rachat joue son rôle, plus le
+rendement composé se dégrade légèrement (−0,54% → −1,25% → −1,36%) et le
+pire drawdown se creuse (−0,53% → −1,09% → −1,63%) — élargir le panier
+n'a PAS amélioré le résultat sur cette période, ça a surtout multiplié
+le nombre de trades et l'exposition simultanée. Ce bot mesure le
+comportement RELATIF de la stratégie sur un très large panier — utile
+pour apprendre lesquelles des 24 paires génèrent le plus/moins de
+signaux, pas pour juger si "plus de paires = mieux".
 
 ## Ce qu'on attend en réel
 
 | Métrique | Attendu |
 |---|---|
-| Trades | ~92 par mois (nettement plus que la v1 et que les bots #1/#2) |
-| Trades gagnants | 34,3% |
-| Sorties sur stop-loss | ~66% |
-| Sorties sur objectif | ~34% |
+| Trades | ~107 par mois (nettement plus que les v1/v2 et que les bots #1/#2) |
+| Trades gagnants | 34,9% |
+| Sorties sur stop-loss | ~65% |
+| Sorties sur objectif | ~35% |
 | Part max d'une position | 10 USDT fixes, jamais plus — PAS une part du capital |
 | Positions simultanées (toutes paires) | jusqu'à 25 |
 | Positions simultanées (une même paire) | jusqu'à 3 (30 USDT max sur une crypto) |
 | Cooldown de rachat | jamais moins de 6h entre deux activités sur la même paire |
-| Pire drawdown | proche de 0% par construction, mais plus marqué qu'en v1 (voir avertissement) |
+| Pire drawdown | proche de 0% par construction, mais le plus marqué des 3 versions (voir avertissement) |
 | Rendement | proche de 0% à légèrement négatif — l'ampleur en dollars compte plus que le % ici |
 
 ## Ce qui invaliderait la configuration (pas seulement la stratégie)
@@ -256,10 +263,10 @@ mélangé aux comptages des bots #1/#2) :
   `reentry_cooldown_hours` non respecté, bug de portefeuille.
 - **Plus de 25 positions simultanées au total** →
   `max_concurrent_positions` non respecté, bug de portefeuille.
-- **Un nombre de trades très inférieur à 92/mois** → les minimums d'ordre
-  de l'exchange (`min_cost`/`min_amount`) rejettent probablement une
-  bonne partie des signaux à 10 USDT sur certaines des nouvelles paires.
-  Si observé, le dire explicitement plutôt que de laisser croire à un
+- **Un nombre de trades très inférieur à 107/mois** → les minimums
+  d'ordre de l'exchange (`min_cost`/`min_amount`) rejettent probablement
+  une bonne partie des signaux à 10 USDT sur certaines des paires. Si
+  observé, le dire explicitement plutôt que de laisser croire à un
   filtre de marché plus strict que prévu.
 - Un drawdown ou un rendement qui s'écarte nettement des chiffres
   ci-dessus → signe que quelque chose dans le dimensionnement ou le
@@ -274,8 +281,8 @@ BEAUCOUP de trades avant que quoi que ce soit ici soit interprétable.
 
 ## Résultats observés
 
-_(à compléter à partir de 20 trades du bot #3 EN v2 — les trades
-accumulés sous la v1, si il y en a, ne doivent pas être mélangés à ce
+_(à compléter à partir de 20 trades du bot #3 EN v3 — les trades
+accumulés sous les v1/v2, si il y en a, ne doivent pas être mélangés à ce
 comptage : la configuration a changé)_
 
 | Date | Trades | Gagnants | Pire DD | Position max observée | Écart aux attentes |
