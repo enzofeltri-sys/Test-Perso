@@ -729,11 +729,12 @@ def _fetch_bot_summary(prefix: str) -> dict:
     AUTRE bot). Best-effort partout : une table pas encore migrée ne doit
     jamais faire échouer la page pour les bots qui, eux, existent déjà.
 
-    /all n'affiche que le statut (en ligne / coupe-circuit) et le graphique
-    d'équity — le détail (cash, positions, trades, journal) est déjà sur la
-    page propre à chaque bot, à un clic ; le dupliquer ici serait juste du
-    bruit. `trades` (croissant, jusqu'à 500) ne sert donc qu'à construire la
-    courbe d'équity du graphique."""
+    /all garde le résumé chiffré (cash, positions ouvertes/clôturées) —
+    utile en un coup d'oeil sur une page qui compare 3 bots — mais pas le
+    détail trade-par-trade ni le journal : ça, c'est déjà sur la page
+    propre à chaque bot, à un clic, et le dupliquer ici serait du bruit.
+    `trades` (croissant, jusqu'à 500) sert donc à la fois au compte des
+    positions clôturées (les ventes) et à la courbe d'équity du graphique."""
     def _get(table, params):
         try:
             resp = requests.get(f"{db._base_url()}/{prefix}_{table}", headers=db._headers(),
@@ -747,12 +748,16 @@ def _fetch_bot_summary(prefix: str) -> dict:
     state = (state_rows or [{}])[0] if state_rows else {}
     trades_asc = _get("trades", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
 
+    positions = (state or {}).get("positions") or {}
     healthy = state is not None and not (state.get("daily_tripped_today") or state.get("total_dd_tripped"))
 
     return {
         "found": state_rows is not None,
         "healthy": healthy,
         "total_dd_tripped": bool((state or {}).get("total_dd_tripped")),
+        "cash": (state or {}).get("cash"),
+        "open_positions": len(positions),
+        "closed_positions": sum(1 for t in trades_asc if t.get("side") == "sell"),
         # (ts brut, equity_after) — matière première du graphique, jamais
         # affiché directement ; on garde le ts ISO ici, l'analyse (parsing,
         # échelle) est isolée dans _build_equity_chart_svg pour rester testable.
@@ -924,6 +929,9 @@ ALL_PAGE = """<!doctype html>
   .status-line{ display:flex; align-items:baseline; gap:8px; font-size:0.82rem; color:var(--text-muted); flex-shrink:0; }
   .dot{ width:6px; height:6px; border-radius:50%; display:inline-block; }
   .dot.ok{ background:var(--green); } .dot.bad{ background:var(--red); } .dot.unknown{ background:var(--text-faint); }
+  .stats-row{ display:flex; gap:24px; margin-top:14px; flex-wrap:wrap; }
+  .stat .n{ font-size:0.72rem; color:var(--text-muted); margin-bottom:2px; }
+  .stat .v{ font-family:"IBM Plex Mono", monospace; font-variant-numeric:tabular-nums; font-size:0.98rem; }
   .empty{ font-size:0.82rem; color:var(--text-faint); margin-bottom:14px; }
   .bot-link{
     display:inline-flex; align-items:center; gap:6px; margin-top:16px;
@@ -990,6 +998,13 @@ ALL_PAGE = """<!doctype html>
       </span>
       {% endif %}
     </div>
+    {% if b.summary.found %}
+      <div class="stats-row">
+        <div class="stat"><div class="n">Cash</div><div class="v">{{ '$%.2f'|format(b.summary.cash) if b.summary.cash is not none else '—' }}</div></div>
+        <div class="stat"><div class="n">Positions ouvertes</div><div class="v">{{ b.summary.open_positions }}</div></div>
+        <div class="stat"><div class="n">Positions clôturées</div><div class="v">{{ b.summary.closed_positions }}</div></div>
+      </div>
+    {% endif %}
     {% if not b.summary.found %}
       <p class="empty">Aucune donnée pour l'instant — tables pas encore migrées ou service pas encore déployé.</p>
     {% endif %}
