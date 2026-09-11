@@ -1,0 +1,205 @@
+# =============================================================
+# Configuration du bot de trading — BOT #3 "micro-paris" (paper trading)
+# =============================================================
+# Troisième instance, DÉPLOYÉE SÉPARÉMENT (voir DEPLOIEMENT.md, section
+# "Un troisième bot — micro-paris diversifiés"), TABLE_PREFIX=microbot.
+#
+# Méthode de dimensionnement VOLONTAIREMENT DIFFÉRENTE des bots #1 et #2 :
+# ceux-là dimensionnent par le risque (% du capital selon la distance du
+# stop, plafonné à 25% du capital). Ici, CHAQUE position est plafonnée à
+# un MONTANT FIXE (max_position_notional_usd: 10 USDT), quel que soit le
+# stop ou le capital — jusqu'à 10 paires simultanées (max_concurrent_
+# positions: 10), donc au plus 100 USDT sur 1000 jamais investis en même
+# temps. C'est une expérience de diversification extrême par petites
+# mises identiques, pas une façon d'augmenter les gains — voir
+# ATTENTES.md, section "Bot #3", pour ce que le walk-forward en attend
+# RÉELLEMENT (rendement quasi nul, mais pour une raison mécanique : si peu
+# de capital est jamais engagé que le résultat ne valide quasiment rien).
+#
+# =============================================================
+# Configuration du bot de trading
+# =============================================================
+
+# mode: "paper" = trading simulé (virtuel), "live" = ordres réels
+# -> Reste sur "paper" tant que tu n'as pas validé la stratégie
+#    sur plusieurs semaines/mois de simulation ET en walk-forward.
+mode: paper
+
+exchange:
+  # identifiant ccxt de l'exchange EN DIRECT (paper trading, web_app.py).
+  # binance.com renvoie 451 "restricted location" depuis les IP hébergées aux
+  # USA (Render free tier = Oregon) — kucoin n'a pas ce blocage géographique.
+  # Si jamais kucoin bloque aussi depuis ton hébergeur, autres candidats à
+  # essayer (mêmes symboles BTC/ETH/SOL en USDT) : bybit, okx, kraken.
+  id: kucoin
+  # exchange utilisé UNIQUEMENT pour l'historique profond du walk-forward
+  # et de recalibrate.py (main.py backtest/validate, recalibrate.py) —
+  # kucoin plafonne son historique 1h public à ~83 jours (~2000 bougies)
+  # quel que soit since_days demandé, insuffisant pour train_days+test_days
+  # (vérifié empiriquement).
+  # binance a un historique bien plus profond MAIS bloque aussi (451
+  # "restricted location") une partie du pool d'IP GitHub Actions, de façon
+  # inconsistante d'un run à l'autre — écarté, inacceptable pour un cron
+  # mensuel automatique qui doit être fiable. bybit bloque aussi (blocage
+  # géo CloudFront, cette fois systématique). okx a un historique profond
+  # (300 bougies/appel — voir le correctif de pagination dans data.py,
+  # ce plafond natif ne veut pas dire "fin de l'historique") et n'a montré
+  # aucun blocage.
+  history_exchange_id: okx
+  timeframe: 1h         # bougie: 1m, 5m, 15m, 1h, 4h, 1d, ...
+
+# ---------------------------------------------------------------
+# Portefeuille : plusieurs paires tradées avec un capital PARTAGÉ,
+# plutôt qu'une seule paire isolée. Répartir sur plusieurs paires non
+# parfaitement corrélées lisse un peu le bruit d'un backtest sur un
+# seul actif (voir README, section "Portefeuille").
+# ---------------------------------------------------------------
+portfolio:
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - BNB/USDT
+    - XRP/USDT
+    - LINK/USDT
+    - ADA/USDT
+    - DOGE/USDT
+    - AVAX/USDT
+    - DOT/USDT
+  # jusqu'à 10 paires simultanées : contrairement aux bots #1/#2, le
+  # plafond qui protège ici n'est PAS ce réglage, c'est
+  # max_position_notional_usd plus bas (10 USDT/position) — sans lui
+  # relâcher, un plafond à 2 laisserait 98% du capital inutilisé et
+  # viderait l'expérience de diversification de son sens.
+  max_concurrent_positions: 10
+  momentum_lookback: 20         # sert à départager plusieurs signaux simultanés (le plus fort momentum d'abord)
+
+# ---------------------------------------------------------------
+# Stratégie hybride à bascule de régime : utilise la stratégie de
+# tendance (multi-signaux) quand l'ADX indique un marché en tendance,
+# et la stratégie de retournement (Bollinger + RSI) quand le marché
+# est sans direction claire. Voir README pour le détail.
+# ---------------------------------------------------------------
+strategy:
+  # Filtre de marché long terme : AUCUNE entrée (tendance ou retournement)
+  # tant que le prix est sous son EMA de `ema_period` bougies. Le bot est
+  # long-only : en phase baissière prolongée, la meilleure position est de
+  # ne pas en avoir. Sur un an de vraies données (walk-forward, 9 fenêtres
+  # hors-échantillon, buy & hold -25%), ce filtre a réduit la perte de -35%
+  # à -20/-23% et le pire drawdown de -13% à -6/-8%, quelle que soit la
+  # longueur testée (150 à 720). Mettre `ema_period: null` pour désactiver.
+  market_filter:
+    ema_period: 200            # ~8 jours en bougies 1h
+
+  regime:
+    adx_period: 14
+    adx_trend_threshold: 25    # ADX > seuil -> "trending", sinon -> "ranging"
+    regime_confirm_bars: 3     # hystérésis : le régime doit être stable N bougies avant de basculer
+
+  trend:
+    ema_fast: 12
+    ema_slow: 26
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    rsi_period: 14
+    rsi_veto_overbought: 75
+    volume_ma_period: 20
+    volume_mult: 1.2
+    atr_period: 14
+    atr_multiplier_stop: 2.0
+    reward_risk_ratio: 2.0
+    min_score_to_enter: 2      # score min pour entrer (score va de -2 à +3)
+    # Sortie sur signal : sort si le score retombe à ce niveau ou en dessous.
+    # `null` = jamais, seuls le stop et l'objectif ferment la position. Sur
+    # bougies 1h, le score bascule à chaque croisement MACD contraire : avec
+    # 0, la sortie sur signal représentait 51% des sorties et coupait les
+    # gagnants bien avant l'objectif (taux de gain 31%). Sans elle, avec le
+    # filtre de marché : 39% de gain, ~2x moins de trades, résultat
+    # hors-échantillon proche de zéro (-1%) au lieu de -35%.
+    exit_score_threshold: null
+
+  mean_reversion:
+    bb_period: 20
+    bb_std: 2.0
+    rsi_period: 14
+    rsi_oversold: 30
+    rsi_exit: 55
+    atr_period: 14
+    atr_multiplier_stop: 1.5
+    reward_risk_ratio: 1.5
+
+# ---------------------------------------------------------------
+# Gestion du risque : indépendante de la stratégie, s'applique au
+# capital TOTAL du portefeuille.
+# ---------------------------------------------------------------
+risk:
+  risk_per_trade_pct: 0.01     # on accepte de perdre au plus 1% du capital si le stop est touché
+  # Part maximale du capital dans UNE seule position. Sans ce plafond, le
+  # dimensionnement par le risque (inversement proportionnel à la distance
+  # du stop) demande une position d'autant plus GROSSE que la volatilité
+  # est basse : mesuré sur un an réel, 24% des entrées finissaient bornées
+  # par le cash disponible, soit ~100% du capital sur une seule paire
+  # (position médiane : 50%). Le "1% de risque par trade" restait vrai TANT
+  # QUE le stop est honoré, mais tout le capital était exposé à un trou de
+  # cotation. En walk-forward, plafonner ne coûte rien en rendement
+  # (-1,27% -> -0,06%) et divise presque par deux le pire drawdown
+  # (-5,84% -> -3,16%). C'est aussi ce qui rend max_concurrent_positions
+  # réellement atteignable. `null` pour désactiver.
+  # désactivé (null) pour ce bot : c'est max_position_notional_usd,
+  # un montant FIXE plutôt qu'une part du capital, qui gouverne la
+  # taille des positions ici — voir l'en-tête de ce fichier.
+  max_position_pct_of_equity: null
+  # LE mécanisme propre au bot #3 : jamais plus de 10 USDT sur UNE
+  # position, quels que soient le capital ou la distance du stop.
+  max_position_notional_usd: 10
+  max_daily_loss_pct: 0.03     # coupe-circuit journalier : arrête les nouvelles entrées après -3% sur une journée
+  max_total_drawdown_pct: 0.20 # coupe-circuit TOTAL : arrête définitivement (jusqu'à révision manuelle) après -20% depuis le plus haut
+  max_correlation_for_new_position: 0.75  # refuse une nouvelle position trop corrélée à une position déjà ouverte (null pour désactiver)
+  correlation_lookback: 30     # nb de bougies utilisées pour estimer la corrélation glissante entre deux paires
+
+backtest:
+  since_days: 365          # profondeur d'historique à télécharger, par paire
+  initial_balance: 1000    # capital de départ (virtuel), partagé entre les paires
+  fee_pct: 0.001           # frais par trade (0.1% = ordre de grandeur frais spot classique, aucun ordre réel n'étant envoyé ça reste indicatif)
+  slippage_pct: 0.0005     # glissement de prix simulé à l'exécution (0.05%)
+
+# ---------------------------------------------------------------
+# Validation walk-forward : optimise `param_grid` sur une fenêtre
+# glissante de `train_days`, teste hors-échantillon sur les
+# `test_days` suivants, avance de `step_days`, recommence. Seuls les
+# résultats de test sont agrégés (voir README).
+# ---------------------------------------------------------------
+walk_forward:
+  train_days: 90
+  test_days: 30
+  step_days: 30
+  param_grid:
+    trend.min_score_to_enter: [2, 3]
+    regime.adx_trend_threshold: [20, 25, 30]
+
+# ---------------------------------------------------------------
+# Monte Carlo : ré-échantillonne les trades du backtest pour estimer
+# une fourchette de résultats plausibles plutôt qu'un seul chiffre.
+# ---------------------------------------------------------------
+monte_carlo:
+  num_simulations: 1000
+
+paper_trading:
+  initial_balance: 1000
+  poll_interval_seconds: 60     # fréquence de vérification du marché
+  # nb de bougies récupérées à chaque cycle : doit couvrir LARGEMENT
+  # l'indicateur le plus lent (l'EMA 200 du filtre de marché — avec
+  # seulement 200 bougies, sa valeur ne serait qu'une approximation)
+  lookback_candles: 500
+  log_file: logs/paper_trades.csv
+
+# ---------------------------------------------------------------
+# Trading réel : désactivé par défaut.
+# Ne PAS mettre de vraies clés API ici en clair. Voir README.md
+# section "Passer au réel" avant d'envisager d'activer ce mode.
+# ---------------------------------------------------------------
+live_trading:
+  enabled: false
+  api_key_env: BINANCE_API_KEY        # nom de la variable d'environnement à utiliser
+  api_secret_env: BINANCE_API_SECRET

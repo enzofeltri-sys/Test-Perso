@@ -153,3 +153,95 @@ _(à compléter à partir de 20 trades du bot #2 — ne rien conclure avant)_
 | Date | Trades | Gagnants | Pire DD | Exposition max | Écart aux attentes |
 |---|---|---|---|---|---|
 | | | | | | |
+
+---
+
+# Bot #3 — micro-paris diversifiés (10 paires, 10 USDT max/position)
+
+Troisième bot, avec une méthode de dimensionnement VOLONTAIREMENT
+différente des bots #1 et #2 — voir DEPLOIEMENT.md, "Un troisième bot".
+Au lieu de dimensionner par le risque (% du capital selon la distance du
+stop), chaque position est plafonnée à un **montant fixe** (10 USDT),
+sur un panier de 10 paires, jusqu'à 10 positions simultanées, capital de
+départ 1000 USDT virtuels. Au plus 100 USDT sur 1000 jamais investis en
+même temps.
+
+## Provenance des chiffres
+
+Walk-forward sur un an de données réelles OKX (BTC, ETH, SOL, BNB, XRP,
+LINK, ADA, DOGE, AVAX, DOT en 1h), 9 fenêtres hors-échantillon de 30
+jours. Historique exporté via GitHub Actions run `34579866367` le
+11/09/2026, calcul local sur le commit `e49023c` (celui qui introduit
+`max_position_notional_usd`). Fenêtres calculées un jour après celles des
+bots #1/#2 (11/09 contre 10/09) — comparaison directionnelle valable,
+pas chiffre à chiffre.
+
+Résultat agrégé : **−0,54%** composé sur les 9 fenêtres, **329 trades**
+(~36,6/mois), taux de gain 34,3%, pire drawdown **−0,53%**.
+
+## ⚠️ Ce que ce résultat NE prouve PAS
+
+Le rendement proche de zéro et le drawdown minuscule (−0,53%, contre
+−3,2% pour le bot #1 et −5,1% pour le bot #2) ne sont **pas** un signe
+que cette approche est plus sûre ou plus intelligente. C'est un effet
+**mécanique** : avec 10 USDT plafonnés par position sur 1000 USDT de
+capital, la perte totale sur TOUTE la période de test n'a été que de
+**5,40 USDT**. Le résultat est proche de zéro parce que presque rien n'a
+jamais été réellement en jeu — pas parce que la stratégie a mieux
+fonctionné sur ce panier. Ne jamais présenter "plus petit drawdown" comme
+une victoire pour ce bot en particulier : c'est la conséquence directe et
+attendue de la taille des mises, pas une découverte sur le marché.
+
+Ce que ce bot mesure vraiment : le comportement RELATIF de la stratégie
+sur 10 paires en parallèle (quelles paires génèrent le plus de signaux,
+lesquelles gagnent/perdent le plus souvent) — utile pour apprendre, pas
+pour juger si "ça marche mieux à 10 paires qu'à 3".
+
+## Ce qu'on attend en réel
+
+| Métrique | Attendu |
+|---|---|
+| Trades | ~37 par mois (bien plus que les bots #1/#2 — 10 paires, positions minuscules) |
+| Trades gagnants | 34,3% |
+| Sorties sur stop-loss | ~66% |
+| Sorties sur objectif | ~34% |
+| Part max d'une position | 10 USDT fixes, jamais plus — PAS une part du capital |
+| Positions simultanées | jusqu'à 10 |
+| Pire drawdown | proche de 0% par construction (voir avertissement ci-dessus) |
+| Rendement | proche de 0%, dans les deux sens — l'ampleur en dollars compte plus que le % ici |
+
+## Ce qui invaliderait la configuration (pas seulement la stratégie)
+
+À évaluer à partir de 20 trades réels **de ce bot uniquement**
+(`select count(*) from microbot_trades where side='sell';` — jamais
+mélangé aux comptages des bots #1/#2) :
+
+- **Une position au-dessus de 10 USDT observée** → bug du plafond fixe,
+  pas un résultat de marché : c'est LE mécanisme central de ce bot, une
+  violation ici est plus grave que pour les bots #1/#2.
+- **Plus de 10 positions simultanées** → `max_concurrent_positions` non
+  respecté, bug de portefeuille.
+- **Un nombre de trades très inférieur à 37/mois** → les minimums d'ordre
+  de l'exchange (`min_cost`/`min_amount`) rejettent probablement une
+  bonne partie des signaux à 10 USDT — sur certaines paires, 10 USDT peut
+  être sous le plancher réel de l'exchange. Si observé, le dire
+  explicitement plutôt que de laisser croire à un filtre de marché plus
+  strict que prévu.
+- Un drawdown ou un rendement qui s'écarte nettement de "proche de zéro"
+  → contredit directement l'effet mécanique attendu ci-dessus, signe que
+  quelque chose dans le dimensionnement ne fonctionne pas comme prévu.
+
+## Rappel de méthode
+
+Même précédent que les bots #1/#2 : un résultat sur peu de données n'est
+pas un résultat. Ici plus encore, parce que la faible taille des mises
+rend chaque trade individuel presque invisible dans le bruit — il faudra
+BEAUCOUP de trades avant que quoi que ce soit ici soit interprétable.
+
+## Résultats observés
+
+_(à compléter à partir de 20 trades du bot #3 — ne rien conclure avant)_
+
+| Date | Trades | Gagnants | Pire DD | Position max observée | Écart aux attentes |
+|---|---|---|---|---|---|
+| | | | | | |

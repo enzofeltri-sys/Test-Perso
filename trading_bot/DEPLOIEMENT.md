@@ -557,6 +557,119 @@ pour ne jamais les confondre au premier coup d'œil.
 propre `ALERT_TEST_TOKEN`.
 
 
+## 3septies. Un troisième bot — micro-paris diversifiés
+
+Même principe que le bot #2 (voir la section précédente), avec une
+méthode de dimensionnement VOLONTAIREMENT différente : au lieu de
+dimensionner par le risque (% du capital selon la distance du stop),
+chaque position est plafonnée à un **montant fixe** (`max_position_
+notional_usd: 10` dans `config_bot3.yaml`), sur un panier de 10 paires,
+jusqu'à 10 positions simultanées. But : observer le comportement de la
+stratégie diversifié sur beaucoup de paires à la fois, pas augmenter les
+gains — voir `ATTENTES.md`, section "Bot #3", et son avertissement :
+le drawdown minuscule attendu est un effet MÉCANIQUE des petites mises,
+pas une preuve que cette configuration est meilleure.
+
+### Étape 1 — les tables du bot #3
+
+Même schéma que les sections précédentes, préfixe `microbot_` :
+
+```sql
+create table if not exists public.microbot_state (
+  id text primary key default 'default',
+  cash numeric not null,
+  positions jsonb not null default '{}'::jsonb,
+  daily_current_day date,
+  daily_equity_at_day_start numeric,
+  daily_tripped_today boolean not null default false,
+  total_dd_peak_equity numeric,
+  total_dd_tripped boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.microbot_trades (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  symbol text not null,
+  side text not null,
+  price numeric not null,
+  qty numeric not null,
+  reason text not null,
+  cash_after numeric not null,
+  equity_after numeric not null
+);
+
+create table if not exists public.microbot_errors (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  message text not null
+);
+
+create table if not exists public.microbot_config (
+  id text primary key default 'default',
+  risk_per_trade_pct numeric,
+  max_position_pct_of_equity numeric,
+  max_position_notional_usd numeric,
+  max_daily_loss_pct numeric,
+  max_total_drawdown_pct numeric,
+  max_correlation_for_new_position numeric,
+  correlation_lookback int,
+  momentum_lookback int,
+  max_concurrent_positions int,
+  active_symbols jsonb,
+  strategy_overrides jsonb,
+  note text,
+  updated_by text,
+  updated_at timestamptz not null default now()
+);
+insert into public.microbot_config (id) values ('default')
+  on conflict (id) do nothing;
+
+create table if not exists public.microbot_journal (
+  id bigserial primary key,
+  ts timestamptz not null default now(),
+  author text not null check (author in ('bot', 'manager')),
+  message text not null,
+  data jsonb
+);
+
+alter table public.microbot_state enable row level security;
+alter table public.microbot_trades enable row level security;
+alter table public.microbot_errors enable row level security;
+alter table public.microbot_config enable row level security;
+alter table public.microbot_journal enable row level security;
+
+create policy "microbot_state_all" on public.microbot_state
+  for all to anon, authenticated using (true) with check (true);
+create policy "microbot_trades_all" on public.microbot_trades
+  for all to anon, authenticated using (true) with check (true);
+create policy "microbot_errors_all" on public.microbot_errors
+  for all to anon, authenticated using (true) with check (true);
+create policy "microbot_config_all" on public.microbot_config
+  for all to anon, authenticated using (true) with check (true);
+create policy "microbot_journal_all" on public.microbot_journal
+  for all to anon, authenticated using (true) with check (true);
+```
+
+Note : `microbot_config` a une colonne en plus des autres bots
+(`max_position_notional_usd`) — c'est le seul réglage qui distingue
+vraiment ce bot des deux autres, ajustable à chaud comme le reste.
+
+### Étape 2 — le service Render
+
+| Variable | Bot #3 (micro-paris) |
+|---|---|
+| `SUPABASE_URL` / `SUPABASE_KEY` | identiques aux bots #1/#2 (même projet) |
+| `BOT_CONFIG` | `config_bot3.yaml` |
+| `TABLE_PREFIX` | `microbot` |
+| `BOT_LABEL` | `bot micro-paris (10 paires, 10$/position)` |
+| `ALERT_WEBHOOK_URL` | même webhook, distingué par `BOT_LABEL` |
+| `ALERT_TEST_TOKEN` | un jeton propre à ce service |
+| `PYTHON_VERSION` | `3.11.9` |
+
+Le reste (UptimeRobot sur son `/tick`, page de statut à la racine de son
+URL) suit exactement le même schéma que le bot #2.
+
 ## 4. Vérifier que ça tourne
 
 - **Historique des trades** : dans Supabase, `Table Editor →
