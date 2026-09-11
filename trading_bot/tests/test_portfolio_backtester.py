@@ -25,6 +25,8 @@ def _make_backtester(cfg, min_order_limits=None):
         max_correlation_for_new_position=risk_cfg.get("max_correlation_for_new_position"),
         correlation_lookback=risk_cfg.get("correlation_lookback", 30),
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
+        max_positions_per_symbol=pf_cfg.get("max_positions_per_symbol", 1),
+        reentry_cooldown_hours=risk_cfg.get("reentry_cooldown_hours"),
         min_order_limits=min_order_limits,
     )
 
@@ -97,3 +99,146 @@ def test_periods_per_year_matches_hourly_candles():
 def test_periods_per_year_matches_daily_candles():
     index = pd.date_range("2023-01-01", periods=100, freq="D")
     assert _periods_per_year(index) == pytest.approx(365.25, rel=1e-6)
+
+
+class _AlwaysEnterStrategy:
+    """Stub minimal (même interface qu'une RegimeSwitchingStrategy) : entre
+    dès que possible, ne sort JAMAIS d'elle-même (stop/target hors de
+    portée, pas de sortie sur signal) — isole le comportement du
+    PORTEFEUILLE (plafond de rachat par paire) de la logique de décision
+    d'une vraie stratégie."""
+    def __init__(self):
+        self._active = None
+
+    def prepare(self, df):
+        return df
+
+    def should_enter(self, row):
+        return True
+
+    def should_exit_on_signal(self, row):
+        return False
+
+    def compute_stop_and_target(self, entry_price, row):
+        self._active = "trend"
+        return entry_price * 0.01, entry_price * 100, entry_price  # jamais touchés
+
+    def on_position_closed(self):
+        self._active = None
+
+    @property
+    def active_regime(self):
+        return self._active
+
+    @property
+    def trend_strategy(self):
+        return self
+
+    @property
+    def range_strategy(self):
+        return self
+
+
+class _FlickerStrategy:
+    """Stub : entre dès que possible, sort à la bougie SUIVANTE (sortie sur
+    signal systématique) — génère une série de trades très rapprochés dans
+    le temps, pour isoler le cooldown du reste."""
+    def __init__(self):
+        self._active = None
+
+    def prepare(self, df):
+        return df
+
+    def should_enter(self, row):
+        return True
+
+    def should_exit_on_signal(self, row):
+        return True
+
+    def compute_stop_and_target(self, entry_price, row):
+        self._active = "trend"
+        return entry_price * 0.01, entry_price * 100, entry_price  # jamais touchés par low/high
+
+    def on_position_closed(self):
+        self._active = None
+
+    @property
+    def active_regime(self):
+        return self._active
+
+    @property
+    def trend_strategy(self):
+        return self
+
+    @property
+    def range_strategy(self):
+        return self
+
+
+def test_max_positions_per_symbol_caps_rebuys_on_the_same_pair(portfolio_data):
+    """Bot #3 : jusqu'à 3 positions simultanées sur UNE paire, jamais plus
+    même si la stratégie continue de signaler une entrée à chaque bougie."""
+    data = {"BTC/USDT": portfolio_data["BTC/USDT"]}
+    bt = PortfolioBacktester(
+        strategy_factory=_AlwaysEnterStrategy,
+        initial_balance=1000.0, fee_pct=0.001, risk_per_trade_pct=0.5,
+        max_position_notional_usd=10.0, max_positions_per_symbol=3,
+        max_concurrent_positions=100,
+    )
+    result = bt.run(data)
+
+    assert result["final_open_positions"]["BTC/USDT"] == 3
+
+
+def test_max_positions_per_symbol_of_one_matches_historical_behaviour(portfolio_data):
+    """Défaut (1) : jamais plus d'une position par paire à la fois — le
+    comportement des bots #1/#2, inchangé par l'ajout du rachat."""
+    data = {"BTC/USDT": portfolio_data["BTC/USDT"]}
+    bt = PortfolioBacktester(
+        strategy_factory=_AlwaysEnterStrategy,
+        initial_balance=1000.0, fee_pct=0.001, risk_per_trade_pct=0.5,
+        max_position_notional_usd=10.0,  # max_positions_per_symbol non fourni -> défaut 1
+        max_concurrent_positions=100,
+    )
+    result = bt.run(data)
+
+    assert result["final_open_positions"]["BTC/USDT"] == 1
+
+
+def test_reentry_cooldown_blocks_immediate_rebuy_but_allows_after_the_window(portfolio_data):
+    """Après une sortie sur une paire, aucune nouvelle entrée sur CETTE
+    paire avant reentry_cooldown_hours — même si la stratégie signale une
+    entrée dès la bougie suivante."""
+    data = {"BTC/USDT": portfolio_data["BTC/USDT"].iloc[:100]}
+    cooldown_hours = 5
+    bt = PortfolioBacktester(
+        strategy_factory=_FlickerStrategy,
+        initial_balance=1000.0, fee_pct=0.001, risk_per_trade_pct=0.5,
+        max_position_notional_usd=10.0, max_positions_per_symbol=1,
+        reentry_cooldown_hours=cooldown_hours,
+    )
+    result = bt.run(data)
+
+    btc_trades = [t for t in result["trades"] if t["symbol"] == "BTC/USDT"]
+    assert len(btc_trades) >= 3, "pas assez de trades pour que le test prouve quelque chose"
+    for prev, nxt in zip(btc_trades, btc_trades[1:]):
+        gap_hours = (nxt["entry_time"] - prev["exit_time"]).total_seconds() / 3600
+        assert gap_hours >= cooldown_hours - 1e-9, (
+            f"rachat {gap_hours:.1f}h après la sortie précédente, en dessous du cooldown ({cooldown_hours}h)"
+        )
+
+
+def test_reentry_cooldown_disabled_by_default_allows_immediate_rebuy(portfolio_data):
+    """None (défaut) = pas de cooldown — comportement historique inchangé."""
+    data = {"BTC/USDT": portfolio_data["BTC/USDT"].iloc[:50]}
+    bt = PortfolioBacktester(
+        strategy_factory=_FlickerStrategy,
+        initial_balance=1000.0, fee_pct=0.001, risk_per_trade_pct=0.5,
+        max_position_notional_usd=10.0, max_positions_per_symbol=1,
+    )
+    result = bt.run(data)
+
+    btc_trades = [t for t in result["trades"] if t["symbol"] == "BTC/USDT"]
+    # sans cooldown, devrait racheter dès la bougie suivante -> ~1 trade
+    # ouvert/fermé par bougie disponible (borné par le nombre de bougies)
+    assert len(btc_trades) > 5

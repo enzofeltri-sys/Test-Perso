@@ -71,7 +71,8 @@ class PortfolioBacktester:
                  max_correlation_for_new_position: float = None, correlation_lookback: int = 30,
                  momentum_lookback: int = 20, max_total_drawdown_pct: float = None,
                  min_order_limits: dict = None, max_position_pct_of_equity: float = None,
-                 max_position_notional_usd: float = None):
+                 max_position_notional_usd: float = None, max_positions_per_symbol: int = 1,
+                 reentry_cooldown_hours: float = None):
         """
         strategy_factory: fonction sans argument qui retourne une NOUVELLE
         instance de stratégie (une par symbole, cf. docstring du module).
@@ -80,6 +81,19 @@ class PortfolioBacktester:
         (voir data.get_min_order_limits) — un signal qui suggère une
         position plus petite que le minimum d'ordre de l'exchange pour ce
         symbole est refusé, comme le ferait un exchange réel.
+
+        max_positions_per_symbol: combien de positions SIMULTANÉES sur la
+        MÊME paire sont autorisées (défaut 1 = comportement historique,
+        jamais de rachat tant qu'une position sur cette paire est ouverte).
+        Un bot qui veut pouvoir se racheter sur une paire déjà tradée
+        (ex: bot #3, jusqu'à 3 x max_position_notional_usd sur une seule
+        crypto) passe une valeur > 1 ici.
+
+        reentry_cooldown_hours: délai minimum, en heures, entre la
+        DERNIÈRE activité (achat OU vente) sur une paire et une nouvelle
+        entrée sur cette même paire — évite d'enchaîner immédiatement un
+        rachat juste après un stop-loss sur le même bruit de marché.
+        `None` ou 0 = pas de cooldown (défaut, comportement historique).
         """
         self.strategy_factory = strategy_factory
         self.initial_balance = initial_balance
@@ -93,6 +107,8 @@ class PortfolioBacktester:
         self.min_order_limits = min_order_limits or {}
         self.max_position_pct_of_equity = max_position_pct_of_equity
         self.max_position_notional_usd = max_position_notional_usd
+        self.max_positions_per_symbol = max_positions_per_symbol or 1
+        self.reentry_cooldown_hours = reentry_cooldown_hours
         self.daily_breaker = DailyLossCircuitBreaker(max_daily_loss_pct) if max_daily_loss_pct else None
         self.total_dd_breaker = TotalDrawdownCircuitBreaker(max_total_drawdown_pct) if max_total_drawdown_pct else None
 
@@ -133,12 +149,25 @@ class PortfolioBacktester:
                 ).corr(returns_by_symbol[s2])
 
         cash = self.initial_balance
-        positions = {s: None for s in symbols}
+        # positions[s] : LISTE de positions ouvertes sur cette paire (0 à
+        # max_positions_per_symbol) — pas un dict/None unique, pour permettre
+        # le rachat (plusieurs positions simultanées sur la même paire, voir
+        # docstring de __init__). Chaque position porte son propre "regime"
+        # (quelle sous-stratégie l'a ouverte) : la stratégie partagée par
+        # symbole n'est PAS fiable pour ça dès qu'on autorise plus d'une
+        # position à la fois sur la même paire (son état interne _active
+        # est unique, écrasé par la prochaine entrée avant que la
+        # précédente ne se ferme) — voir strategy.py, RegimeSwitchingStrategy.
+        positions = {s: [] for s in symbols}
+        last_activity = {s: None for s in symbols}  # dernier achat OU vente sur cette paire (cooldown)
         equity_curve = []
         trades = []
         breaker_blocks = 0
         total_dd_blocks = 0
         correlation_blocks = 0
+
+        def _position_value(prices):
+            return sum(p["qty"] * prices[s] for s in symbols for p in positions[s])
 
         row_iterators = zip(*[prepared[s].iterrows() for s in symbols])
 
@@ -147,30 +176,35 @@ class PortfolioBacktester:
             rows = {s: aligned[i][1] for i, s in enumerate(symbols)}
             prices = {s: rows[s]["close"] for s in symbols}
 
-            equity_now = cash + sum(
-                positions[s]["qty"] * prices[s] for s in symbols if positions[s] is not None
-            )
+            equity_now = cash + _position_value(prices)
             if self.daily_breaker:
                 self.daily_breaker.update(ts, equity_now)
             if self.total_dd_breaker:
                 self.total_dd_breaker.update(equity_now)
 
-            # 1) sorties (stop-loss / take-profit / signal) pour toutes les paires en position
+            # 1) sorties (stop-loss / take-profit / signal) pour toutes les positions ouvertes
             for s in symbols:
-                pos = positions[s]
-                if pos is None:
+                if not positions[s]:
                     continue
                 row = rows[s]
-                exit_price = exit_reason = None
+                still_open = []
+                for pos in positions[s]:
+                    regime = pos.get("regime")
+                    sub_strategy = (strategies[s].range_strategy if regime == "range"
+                                    else strategies[s].trend_strategy)
+                    exit_price = exit_reason = None
 
-                if row["low"] <= pos["stop_price"]:
-                    exit_price, exit_reason = pos["stop_price"], "stop_loss"
-                elif row["high"] >= pos["target_price"]:
-                    exit_price, exit_reason = pos["target_price"], "take_profit"
-                elif strategies[s].should_exit_on_signal(row):
-                    exit_price, exit_reason = row["close"], "signal"
+                    if row["low"] <= pos["stop_price"]:
+                        exit_price, exit_reason = pos["stop_price"], "stop_loss"
+                    elif row["high"] >= pos["target_price"]:
+                        exit_price, exit_reason = pos["target_price"], "take_profit"
+                    elif sub_strategy.should_exit_on_signal(row):
+                        exit_price, exit_reason = row["close"], "signal"
 
-                if exit_price is not None:
+                    if exit_price is None:
+                        still_open.append(pos)
+                        continue
+
                     exit_price *= (1 - self.slippage_pct)
                     proceeds = pos["qty"] * exit_price
                     fee = proceeds * self.fee_pct
@@ -180,12 +214,10 @@ class PortfolioBacktester:
                         "symbol": s, "entry_time": pos["entry_time"], "entry_price": pos["entry_price"],
                         "qty": pos["qty"], "exit_time": ts, "exit_price": exit_price,
                         "exit_reason": exit_reason, "pnl": pnl,
-                        # quelle sous-stratégie a ouvert ce trade (trend / range) —
-                        # à lire AVANT on_position_closed(), qui remet l'état à neutre
-                        "regime": getattr(strategies[s], "active_regime", None),
+                        "regime": regime,
                     })
-                    positions[s] = None
-                    strategies[s].on_position_closed()
+                    last_activity[s] = ts
+                positions[s] = still_open
 
             # 2) entrées : coupe-circuits d'abord, puis priorisation par momentum,
             #    puis filtre de corrélation, puis plafond de positions concurrentes
@@ -196,15 +228,20 @@ class PortfolioBacktester:
             if not dd_ok:
                 total_dd_blocks += 1
 
-            open_count = sum(1 for s in symbols if positions[s] is not None)
+            open_count = sum(len(positions[s]) for s in symbols)
 
             if breaker_ok and dd_ok:
-                # on ne consomme should_enter() qu'une fois par symbole flat, et on
-                # trie les candidats par momentum décroissant avant d'allouer les slots
+                # on ne consomme should_enter() qu'une fois par symbole encore
+                # éligible, et on trie les candidats par momentum décroissant
+                # avant d'allouer les slots
                 candidates = []
                 for s in symbols:
-                    if positions[s] is not None:
+                    if len(positions[s]) >= self.max_positions_per_symbol:
                         continue
+                    if self.reentry_cooldown_hours and last_activity[s] is not None:
+                        elapsed_h = (ts - last_activity[s]).total_seconds() / 3600
+                        if elapsed_h < self.reentry_cooldown_hours:
+                            continue
                     if strategies[s].should_enter(rows[s]):
                         mom = momentum_by_symbol[s].loc[ts]
                         candidates.append((s, 0.0 if pd.isna(mom) else mom))
@@ -214,7 +251,7 @@ class PortfolioBacktester:
                     if self.max_concurrent_positions and open_count >= self.max_concurrent_positions:
                         break
 
-                    held_symbols = [s2 for s2 in symbols if positions[s2] is not None]
+                    held_symbols = [s2 for s2 in symbols if positions[s2]]
                     if self.max_correlation_for_new_position is not None and held_symbols:
                         corrs = []
                         for held in held_symbols:
@@ -226,11 +263,10 @@ class PortfolioBacktester:
                             continue
 
                     row = rows[s]
-                    equity_now = cash + sum(
-                        positions[s2]["qty"] * prices[s2] for s2 in symbols if positions[s2] is not None
-                    )
+                    equity_now = cash + _position_value(prices)
                     fill_price = row["close"] * (1 + self.slippage_pct)
                     stop_p, target_p, stop_distance = strategies[s].compute_stop_and_target(fill_price, row)
+                    regime = strategies[s].active_regime
 
                     available_cash = cash / (1 + self.fee_pct)
                     limits = self.min_order_limits.get(s, {})
@@ -243,23 +279,28 @@ class PortfolioBacktester:
                         cost = qty * fill_price
                         fee = cost * self.fee_pct
                         cash -= (cost + fee)
-                        positions[s] = {
+                        positions[s].append({
                             "qty": qty, "entry_price": fill_price, "entry_time": ts,
                             "stop_price": stop_p, "target_price": target_p, "cost": cost + fee,
-                        }
+                            "regime": regime,
+                        })
+                        last_activity[s] = ts
                         open_count += 1
 
-            total_equity = cash + sum(
-                positions[s]["qty"] * prices[s] for s in symbols if positions[s] is not None
-            )
+            total_equity = cash + _position_value(prices)
             equity_curve.append({"timestamp": ts, "equity": total_equity})
 
         equity_df = pd.DataFrame(equity_curve).set_index("timestamp")
 
         bh_return_pct = self._buy_and_hold_return(prepared, symbols)
 
-        return self._compute_metrics(equity_df, trades, breaker_blocks, total_dd_blocks,
-                                      correlation_blocks, bh_return_pct, symbols)
+        result = self._compute_metrics(equity_df, trades, breaker_blocks, total_dd_blocks,
+                                        correlation_blocks, bh_return_pct, symbols)
+        # positions encore ouvertes à la fin de la fenêtre testée, par paire —
+        # sert notamment à vérifier que max_positions_per_symbol n'a jamais
+        # été dépassé (voir tests).
+        result["final_open_positions"] = {s: len(positions[s]) for s in symbols}
+        return result
 
     @staticmethod
     def _buy_and_hold_return(prepared: dict, symbols: list) -> float:

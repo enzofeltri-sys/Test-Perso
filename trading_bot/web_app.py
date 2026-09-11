@@ -265,6 +265,37 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _normalize_positions(positions: dict) -> dict:
+    """Compat : l'ancien format stockait au plus UNE position par symbole
+    (un dict, ou la clé absente/None). Le nouveau format est une LISTE
+    (0 à N positions par symbole), pour permettre le rachat sur une paire
+    déjà tradée (voir portfolio.max_positions_per_symbol). Sans cette
+    normalisation, la position déjà ouverte d'un bot en production
+    disparaîtrait au premier cycle suivant ce déploiement — elle reste
+    gérée normalement, juste enveloppée dans une liste à un élément."""
+    normalized = {}
+    for symbol, value in (positions or {}).items():
+        if value is None:
+            normalized[symbol] = []
+        elif isinstance(value, list):
+            normalized[symbol] = value
+        else:
+            normalized[symbol] = [value]
+    return normalized
+
+
+def _position_value(positions: dict, prices: dict) -> float:
+    """Valeur de marché de TOUTES les positions ouvertes, tous symboles et
+    toutes positions par symbole confondus (une paire peut désormais en
+    porter plusieurs à la fois, voir max_positions_per_symbol)."""
+    return sum(
+        pos["qty"] * prices[symbol]
+        for symbol, open_positions in positions.items()
+        for pos in open_positions
+        if symbol in prices
+    )
+
+
 def _apply_config_overrides(risk_cfg: dict, pf_cfg: dict, overrides: dict) -> set:
     """Applique les réglages posés dans tradingbot_config par-dessus
     config.yaml (une valeur nulle/absente = on garde celle de
@@ -418,7 +449,12 @@ def run_tick() -> dict:
 
     state = db.load_state(initial_balance=pt_cfg["initial_balance"])
     cash = state["cash"]
-    positions = state["positions"]
+    positions = _normalize_positions(state["positions"])
+    max_positions_per_symbol = pf_cfg.get("max_positions_per_symbol") or 1
+    reentry_cooldown_hours = risk_cfg.get("reentry_cooldown_hours")
+    # une seule requête pour TOUS les symboles (voir get_last_trade_ts_by_symbol) —
+    # inutile de la faire si aucun cooldown n'est configuré (bots #1/#2).
+    last_trade_ts = db.get_last_trade_ts_by_symbol() if reentry_cooldown_hours else {}
 
     daily_breaker = DailyLossCircuitBreaker(risk_cfg["max_daily_loss_pct"])
     daily_breaker._current_day = state["daily_current_day"]
@@ -461,7 +497,7 @@ def run_tick() -> dict:
         return {"ok": True, "note": "pas assez de données ce cycle", "errors": fetch_errors}
 
     prices = {s: rows[s]["close"] for s in rows}
-    equity = cash + sum(positions[s]["qty"] * prices[s] for s in rows if positions.get(s))
+    equity = cash + _position_value(positions, prices)
 
     now = datetime.now(timezone.utc)
     daily_was_tripped = daily_breaker._tripped_today
@@ -511,32 +547,38 @@ def run_tick() -> dict:
 
     trades_this_tick = []
 
-    # 1) sorties — on utilise la sous-stratégie qui avait ouvert la
-    #    position (mémorisée dans `positions[s]`), pas l'état interne
-    #    (volatile) de l'objet RegimeSwitchingStrategy.
+    # 1) sorties — on utilise la sous-stratégie qui avait ouvert CHAQUE
+    #    position (mémorisée dessus, pas l'état interne volatile de l'objet
+    #    RegimeSwitchingStrategy, qui ne peut représenter qu'UN régime actif
+    #    à la fois et serait donc faux dès qu'une paire porte plusieurs
+    #    positions simultanées, voir max_positions_per_symbol).
     for s in list(rows.keys()):
-        pos = positions.get(s)
-        if not pos:
+        open_positions = positions.get(s) or []
+        if not open_positions:
             continue
         row = rows[s]
-        active = pos.get("active_substrategy", "trend")
-        sub_strategy = strategies[s].trend_strategy if active == "trend" else strategies[s].range_strategy
+        still_open = []
+        for pos in open_positions:
+            active = pos.get("active_substrategy", "trend")
+            sub_strategy = strategies[s].trend_strategy if active == "trend" else strategies[s].range_strategy
 
-        exit_price = exit_reason = None
-        if row["low"] <= pos["stop_price"]:
-            exit_price, exit_reason = pos["stop_price"], "stop_loss"
-        elif row["high"] >= pos["target_price"]:
-            exit_price, exit_reason = pos["target_price"], "take_profit"
-        elif sub_strategy.should_exit_on_signal(row):
-            exit_price, exit_reason = row["close"], "signal"
+            exit_price = exit_reason = None
+            if row["low"] <= pos["stop_price"]:
+                exit_price, exit_reason = pos["stop_price"], "stop_loss"
+            elif row["high"] >= pos["target_price"]:
+                exit_price, exit_reason = pos["target_price"], "take_profit"
+            elif sub_strategy.should_exit_on_signal(row):
+                exit_price, exit_reason = row["close"], "signal"
 
-        if exit_price is not None:
+            if exit_price is None:
+                still_open.append(pos)
+                continue
+
             exit_price *= (1 - slippage_pct)  # on suppose une exécution légèrement défavorable
             proceeds = pos["qty"] * exit_price
             fee = proceeds * fee_pct
             cash += proceeds - fee
-            positions[s] = None
-            equity_now = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
+            equity_now = cash + _position_value(positions, prices)
             db.log_trade(s, "sell", exit_price, pos["qty"], exit_reason, cash, equity_now)
             trades_this_tick.append({"symbol": s, "side": "sell", "price": exit_price, "reason": exit_reason})
             pnl_pct = (exit_price / pos["entry_price"] - 1) * 100
@@ -556,13 +598,14 @@ def run_tick() -> dict:
                       "pnl_usdt": pnl_usdt, "equity_impact_pct": equity_impact_pct,
                       "equity_after": equity_now},
             )
+        positions[s] = still_open
 
     # 2) entrées — coupe-circuits, puis priorisation par momentum, puis
     #    filtre anti-corrélation (identique à paper_trader.py).
     breaker_ok = daily_breaker.can_open_new_position()
     dd_ok = total_dd_breaker.can_open_new_position()
     max_concurrent = pf_cfg.get("max_concurrent_positions")
-    open_count = sum(1 for s in symbols if positions.get(s))
+    open_count = sum(len(positions.get(s) or []) for s in symbols)
 
     if breaker_ok and dd_ok:
         momentum_lookback = pf_cfg.get("momentum_lookback", 20)
@@ -571,10 +614,19 @@ def run_tick() -> dict:
 
         candidates = []
         for s in rows:
-            if positions.get(s):
+            if len(positions.get(s) or []) >= max_positions_per_symbol:
                 continue
             if s not in active_symbols:
                 continue  # désactivée via tradingbot_config.active_symbols
+            if reentry_cooldown_hours and s in last_trade_ts:
+                try:
+                    last_dt = _parse_ts(last_trade_ts[s])
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if (now - last_dt).total_seconds() / 3600 < reentry_cooldown_hours:
+                        continue  # cooldown : trop tôt après la dernière activité sur cette paire
+                except (ValueError, TypeError):
+                    pass  # horodatage inexploitable -> ne bloque pas une entrée par excès de prudence
             if strategies[s].should_enter(rows[s]):
                 mom_series = dfs[s]["close"].pct_change(momentum_lookback)
                 mom = mom_series.iloc[-1] if len(mom_series) else 0.0
@@ -612,7 +664,7 @@ def run_tick() -> dict:
             # reconduit d'un tick à l'autre (processus stateless, voir plus haut).
             stop_p, target_p, stop_distance = strategies[s].compute_stop_and_target(fill_price, row)
             active = strategies[s].active_regime
-            equity_now = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
+            equity_now = cash + _position_value(positions, prices)
             available_cash = cash / (1 + fee_pct)
             limits = min_order_limits.get(s, {})
             qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], fill_price, stop_distance, available_cash,
@@ -624,12 +676,13 @@ def run_tick() -> dict:
                 cost = qty * fill_price
                 fee = cost * fee_pct
                 cash -= (cost + fee)
-                positions[s] = {
+                positions.setdefault(s, []).append({
                     "qty": qty, "entry_price": fill_price, "stop_price": stop_p,
                     "target_price": target_p, "active_substrategy": active,
-                }
+                })
+                position_rank = len(positions[s])  # 1ère position sur cette paire, ou un rachat (2e, 3e...)
                 open_count += 1
-                equity_after = cash + sum(positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2))
+                equity_after = cash + _position_value(positions, prices)
                 db.log_trade(s, "buy", fill_price, qty, "signal", cash, equity_after)
                 trades_this_tick.append({"symbol": s, "side": "buy", "price": fill_price, "reason": "signal"})
                 regime_label = "tendance (EMA/MACD/volume)" if active == "trend" else "retournement (Bollinger/RSI)"
@@ -642,23 +695,26 @@ def run_tick() -> dict:
                 notional = qty * fill_price
                 pct_of_equity = notional / equity_now * 100 if equity_now else 0.0
                 risk_if_stopped_pct = qty * (fill_price - stop_p) / equity_now * 100 if equity_now else 0.0
-                exposure_pct = sum(
-                    positions[s2]["qty"] * prices[s2] for s2 in rows if positions.get(s2)
-                ) / equity_after * 100 if equity_after else 0.0
+                exposure_pct = _position_value(positions, prices) / equity_after * 100 if equity_after else 0.0
+                # note de rachat uniquement quand elle a un sens (max_positions_per_symbol > 1,
+                # bot #3) — inutile de dire "1/1" pour les bots #1/#2, où ça ne peut jamais arriver.
+                rebuy_note = (f" (position {position_rank}/{max_positions_per_symbol} sur cette paire)"
+                              if max_positions_per_symbol > 1 else "")
                 db.log_journal_entry(
                     "bot",
                     f"Achat {s} : {qty:.6f} @ {fill_price:.2f} = {notional:.2f} USDT, soit "
-                    f"{pct_of_equity:.1f}% du capital — signal de {regime_label}, "
+                    f"{pct_of_equity:.1f}% du capital{rebuy_note} — signal de {regime_label}, "
                     f"stop {stop_p:.2f}, objectif {target_p:.2f}. Si le stop est touché je perds "
                     f"{risk_if_stopped_pct:.2f}% du capital ; exposition totale après ce trade : "
                     f"{exposure_pct:.1f}%.",
                     data={"event": "trade", "side": "buy", "symbol": s, "regime": active,
                           "price": fill_price, "qty": qty, "stop": stop_p, "target": target_p,
                           "notional": notional, "pct_of_equity": pct_of_equity,
-                          "risk_if_stopped_pct": risk_if_stopped_pct, "exposure_pct": exposure_pct},
+                          "risk_if_stopped_pct": risk_if_stopped_pct, "exposure_pct": exposure_pct,
+                          "position_rank": position_rank},
                 )
 
-    total_equity = cash + sum(positions[s]["qty"] * prices[s] for s in rows if positions.get(s))
+    total_equity = cash + _position_value(positions, prices)
 
     db.save_state({
         "cash": cash,
@@ -718,7 +774,7 @@ def _fmt_ts(ts_str):
 BOT_REGISTRY = [
     {"prefix": "tradingbot", "label": "Bot #1 — BTC/ETH/SOL", "url": "https://test-perso.onrender.com"},
     {"prefix": "altbot", "label": "Bot #2 — BNB/XRP/LINK", "url": "https://trading-bot-altcoins.onrender.com"},
-    {"prefix": "microbot", "label": "Bot #3 — 10 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com"},
+    {"prefix": "microbot", "label": "Bot #3 — 18 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com"},
 ]
 
 
@@ -748,7 +804,7 @@ def _fetch_bot_summary(prefix: str) -> dict:
     state = (state_rows or [{}])[0] if state_rows else {}
     trades_asc = _get("trades", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
 
-    positions = (state or {}).get("positions") or {}
+    positions = _normalize_positions((state or {}).get("positions"))
     healthy = state is not None and not (state.get("daily_tripped_today") or state.get("total_dd_tripped"))
 
     return {
@@ -756,7 +812,10 @@ def _fetch_bot_summary(prefix: str) -> dict:
         "healthy": healthy,
         "total_dd_tripped": bool((state or {}).get("total_dd_tripped")),
         "cash": (state or {}).get("cash"),
-        "open_positions": len(positions),
+        # nombre de POSITIONS ouvertes, pas de paires — une paire peut en
+        # porter plusieurs à la fois depuis le rachat (bot #3, voir
+        # max_positions_per_symbol), donc len(positions) sous-compterait.
+        "open_positions": sum(len(v) for v in positions.values()),
         "closed_positions": sum(1 for t in trades_asc if t.get("side") == "sell"),
         # (ts brut, equity_after) — matière première du graphique, jamais
         # affiché directement ; on garde le ts ISO ici, l'analyse (parsing,
@@ -1107,7 +1166,15 @@ def health():
         # est injoignable ou si la table n'existe pas) — voir supabase_state.py.
         strategy_overrides = db.load_config_overrides().get("strategy_overrides") or {}
 
-        positions = [{"symbol": s, **p} for s, p in state["positions"].items() if p]
+        # une ligne PAR position ouverte (pas par paire) : depuis le rachat
+        # (voir max_positions_per_symbol), une paire peut en porter plusieurs
+        # à la fois — _normalize_positions() gère aussi l'ancien format
+        # (un dict par paire) pour un état pas encore migré par un tick.
+        positions = [
+            {"symbol": s, **p}
+            for s, open_positions in _normalize_positions(state["positions"]).items()
+            for p in open_positions
+        ]
         daily_tripped = bool(state.get("daily_tripped_today"))
         total_tripped = bool(state.get("total_dd_tripped"))
 

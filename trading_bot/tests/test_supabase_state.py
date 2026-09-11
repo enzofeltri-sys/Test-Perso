@@ -83,6 +83,7 @@ def test_two_prefixes_never_collide(monkeypatch):
     (lambda: db.save_state({"cash": 1, "positions": {}}), (), "state"),
     (lambda: db.log_trade("BTC/USDT", "buy", 1.0, 1.0, "signal", 1.0, 1.0), (), "trades"),
     (lambda: db.get_recent_trades(), (), "trades"),
+    (lambda: db.get_last_trade_ts_by_symbol(), (), "trades"),
     (lambda: db.get_recent_errors(), (), "errors"),
     (lambda: db.log_journal_entry("bot", "message"), (), "journal"),
     (lambda: db.get_recent_journal(), (), "journal"),
@@ -98,3 +99,37 @@ def test_every_function_uses_its_own_table_under_a_custom_prefix(monkeypatch, fn
     fn()
 
     assert _table_of(calls) == f"altbot_{expected_suffix}"
+
+
+def test_get_last_trade_ts_by_symbol_keeps_only_the_most_recent_per_symbol(monkeypatch):
+    """Les lignes arrivent triées par ts DÉCROISSANT (voir la requête) :
+    la PREMIÈRE occurrence de chaque symbole est donc son trade le plus
+    récent — un rachat (bot #3) ne doit jamais faire regarder trop loin
+    dans le passé."""
+    monkeypatch.setenv("SUPABASE_URL", "https://exemple.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "cle-factice")
+
+    def _get(url, headers=None, params=None, timeout=None):
+        return FakeResponse([
+            {"symbol": "BTC/USDT", "ts": "2026-09-11T10:00:00Z"},   # le plus récent pour BTC
+            {"symbol": "ETH/USDT", "ts": "2026-09-11T09:00:00Z"},   # le plus récent pour ETH
+            {"symbol": "BTC/USDT", "ts": "2026-09-10T00:00:00Z"},   # BTC plus ancien -> ignoré
+        ])
+
+    monkeypatch.setattr(db.requests, "get", _get)
+
+    result = db.get_last_trade_ts_by_symbol()
+
+    assert result == {"BTC/USDT": "2026-09-11T10:00:00Z", "ETH/USDT": "2026-09-11T09:00:00Z"}
+
+
+def test_get_last_trade_ts_by_symbol_degrades_gracefully_when_unreachable(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://exemple.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "cle-factice")
+
+    def _get(url, headers=None, params=None, timeout=None):
+        raise RuntimeError("réseau injoignable")
+
+    monkeypatch.setattr(db.requests, "get", _get)
+
+    assert db.get_last_trade_ts_by_symbol() == {}

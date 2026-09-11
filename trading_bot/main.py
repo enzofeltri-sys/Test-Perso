@@ -79,6 +79,8 @@ def cmd_backtest(cfg: dict):
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
         max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
         max_position_notional_usd=risk_cfg.get("max_position_notional_usd"),
+        max_positions_per_symbol=pf_cfg.get("max_positions_per_symbol", 1),
+        reentry_cooldown_hours=risk_cfg.get("reentry_cooldown_hours"),
         min_order_limits=min_order_limits,
     )
     results = bt.run(market_data)
@@ -136,6 +138,8 @@ def cmd_validate(cfg: dict):
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
         max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
         max_position_notional_usd=risk_cfg.get("max_position_notional_usd"),
+        max_positions_per_symbol=pf_cfg.get("max_positions_per_symbol", 1),
+        reentry_cooldown_hours=risk_cfg.get("reentry_cooldown_hours"),
         min_order_limits=min_order_limits,
     )
 
@@ -222,6 +226,8 @@ def cmd_paper(cfg: dict, run_once: bool):
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
         max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
         max_position_notional_usd=risk_cfg.get("max_position_notional_usd"),
+        max_positions_per_symbol=pf_cfg.get("max_positions_per_symbol", 1),
+        reentry_cooldown_hours=risk_cfg.get("reentry_cooldown_hours"),
     )
 
     if run_once:

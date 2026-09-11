@@ -138,6 +138,36 @@ def get_recent_trades(limit: int = 10) -> list:
     return resp.json()
 
 
+def get_last_trade_ts_by_symbol(limit: int = 500) -> dict:
+    """{symbol: horodatage ISO du DERNIER trade (achat OU vente) sur cette
+    paire}, parmi les `limit` trades les plus récents tous symboles
+    confondus. Sert au cooldown de rachat (voir run_tick) : combien de
+    temps s'est écoulé depuis la dernière activité sur une paire, sans
+    ajouter de colonne d'état ni de requête par symbole — les lignes
+    arrivent déjà triées par date décroissante, donc la première
+    occurrence de chaque symbole EST son trade le plus récent. `limit`
+    doit largement couvrir la fenêtre de cooldown la plus longue utilisée :
+    au volume de trades observé sur ce projet (quelques dizaines par mois),
+    500 couvre plusieurs mois d'historique en un seul appel. Best-effort :
+    {} si la table est injoignable, pour ne jamais faire échouer un cycle."""
+    try:
+        url = f"{_base_url()}/{_table('trades')}"
+        resp = requests.get(
+            url, headers=_headers(),
+            params={"select": "symbol,ts", "order": "ts.desc", "limit": str(limit)}, timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception:
+        return {}
+    last = {}
+    for row in rows:
+        symbol = row.get("symbol")
+        if symbol and symbol not in last:
+            last[symbol] = row.get("ts")
+    return last
+
+
 def get_recent_errors(limit: int = 5) -> list:
     """Les dernières erreurs journalisées, du plus récent au plus ancien."""
     url = f"{_base_url()}/{_table('errors')}"

@@ -15,7 +15,7 @@ RegimeSwitchingStrategy.compute_stop_and_target() doit être appelé sur le
 wrapper, pas sur une sous-stratégie choisie à la main AVANT confirmation).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import yaml
@@ -34,6 +34,11 @@ class FakeDB:
         # lignes renvoyées par get_recent_errors() — sert à simuler des
         # erreurs déjà horodatées en base (déduplication des alertes)
         self.errors_rows = []
+        # quand fourni, court-circuite get_last_trade_ts_by_symbol() avec
+        # des horodatages choisis par le test (cooldown de rachat) plutôt
+        # que de les dériver de self.trades (horodatés en temps réel, donc
+        # inutilisables pour tester "après le cooldown" de façon déterministe)
+        self.last_trade_ts_override = None
 
     def load_state(self, initial_balance):
         if self.state is None:
@@ -52,7 +57,16 @@ class FakeDB:
         self.trades.append({
             "symbol": symbol, "side": side, "price": price, "qty": qty,
             "reason": reason, "cash_after": cash_after, "equity_after": equity_after,
+            "ts": datetime.now(timezone.utc).isoformat(),
         })
+
+    def get_last_trade_ts_by_symbol(self, limit=500):
+        if self.last_trade_ts_override is not None:
+            return self.last_trade_ts_override
+        last = {}
+        for t in self.trades:  # ordre d'insertion chronologique -> la dernière écriture gagne
+            last[t["symbol"]] = t["ts"]
+        return last
 
     def log_error(self, message):
         self.errors.append(message)
@@ -100,6 +114,190 @@ def _fake_fetch_latest_candles(histories, clock):
     return _fetch
 
 
+class _AlwaysEnterStrategy:
+    """Stub (même interface qu'une RegimeSwitchingStrategy) : entre dès que
+    possible, ne sort jamais d'elle-même (stop/target hors de portée) —
+    isole le comportement du RACHAT (max_positions_per_symbol, cooldown)
+    de la logique de décision d'une vraie stratégie."""
+    def __init__(self):
+        self._active = None
+
+    def prepare(self, df):
+        return df
+
+    def should_enter(self, row):
+        return True
+
+    def should_exit_on_signal(self, row):
+        return False
+
+    def compute_stop_and_target(self, entry_price, row):
+        self._active = "trend"
+        return entry_price * 0.01, entry_price * 100, entry_price
+
+    def on_position_closed(self):
+        self._active = None
+
+    @property
+    def active_regime(self):
+        return self._active
+
+    @property
+    def trend_strategy(self):
+        return self
+
+    @property
+    def range_strategy(self):
+        return self
+
+
+def _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=None, max_concurrent_positions=100):
+    """Config minimale pour exercer run_tick() sans dépendre de config.yaml
+    — un seul symbole, une stratégie stub (voir _AlwaysEnterStrategy)."""
+    return {
+        "portfolio": {
+            "symbols": ["BTC/USDT"],
+            "max_concurrent_positions": max_concurrent_positions,
+            "max_positions_per_symbol": max_positions_per_symbol,
+            "momentum_lookback": 20,
+        },
+        "risk": {
+            "risk_per_trade_pct": 0.5,
+            "max_position_notional_usd": 10.0,
+            "reentry_cooldown_hours": reentry_cooldown_hours,
+            "max_daily_loss_pct": 0.5,
+            "max_total_drawdown_pct": 0.9,
+        },
+        "paper_trading": {"initial_balance": 1000.0, "lookback_candles": 200},
+        "exchange": {"id": "kucoin", "timeframe": "1h"},
+        "backtest": {"fee_pct": 0.001, "slippage_pct": 0.0},
+        "strategy": {},
+    }
+
+
+def _patch_common(monkeypatch, cfg, histories, clock, fake_db):
+    monkeypatch.setattr(web_app, "load_config", lambda: cfg)
+    monkeypatch.setattr(web_app, "regime_strategy_from_config", lambda strategy_cfg: _AlwaysEnterStrategy())
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+
+def test_normalize_positions_migrates_old_single_position_format():
+    old_format = {"BTC/USDT": {"qty": 0.01, "entry_price": 100.0}, "ETH/USDT": None}
+    assert web_app._normalize_positions(old_format) == {
+        "BTC/USDT": [{"qty": 0.01, "entry_price": 100.0}], "ETH/USDT": [],
+    }
+
+
+def test_normalize_positions_passes_through_new_list_format_unchanged():
+    new_format = {"BTC/USDT": [{"qty": 0.01}, {"qty": 0.02}]}
+    assert web_app._normalize_positions(new_format) == new_format
+
+
+def test_normalize_positions_handles_missing_or_empty_input():
+    assert web_app._normalize_positions(None) == {}
+    assert web_app._normalize_positions({}) == {}
+
+
+def test_run_tick_migrates_old_single_position_state_format(monkeypatch):
+    """Une position déjà ouverte AVANT ce déploiement (ancien format : un
+    dict par paire) ne doit jamais disparaître au premier cycle suivant —
+    elle doit rester gérée normalement, juste enveloppée dans une liste."""
+    cfg = _minimal_cfg(max_positions_per_symbol=3)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    fake_db.state = {
+        "cash": 950.0,
+        "positions": {"BTC/USDT": {
+            "qty": 0.05, "entry_price": 90.0, "stop_price": 1.0, "target_price": 100000.0,
+            "active_substrategy": "trend",
+        }},
+        "daily_current_day": None, "daily_equity_at_day_start": None,
+        "daily_tripped_today": False, "total_dd_peak_equity": None, "total_dd_tripped": False,
+    }
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+
+    clock.idx += 1
+    result = web_app.run_tick()
+
+    assert result["ok"] is True
+    migrated = fake_db.state["positions"]["BTC/USDT"]
+    assert isinstance(migrated, list)
+    assert any(p["entry_price"] == 90.0 for p in migrated), "la position pré-existante a disparu à la migration"
+
+
+def test_run_tick_caps_rebuys_at_max_positions_per_symbol(monkeypatch):
+    """Bot #3 : jusqu'à 3 positions simultanées sur UNE paire, jamais plus,
+    même si la stratégie continue de signaler une entrée à chaque cycle."""
+    cfg = _minimal_cfg(max_positions_per_symbol=3, max_concurrent_positions=100)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+
+    for _ in range(6):
+        clock.idx += 1
+        result = web_app.run_tick()
+        assert result["ok"] is True
+
+    assert len(fake_db.state["positions"]["BTC/USDT"]) == 3
+
+
+def test_run_tick_default_max_positions_per_symbol_matches_historical_behaviour(monkeypatch):
+    """Sans max_positions_per_symbol dans la config (bots #1/#2) : jamais
+    plus d'une position par paire à la fois, comme avant le rachat."""
+    cfg = _minimal_cfg()  # max_positions_per_symbol=1 par défaut
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+
+    for _ in range(6):
+        clock.idx += 1
+        result = web_app.run_tick()
+        assert result["ok"] is True
+
+    assert len(fake_db.state["positions"]["BTC/USDT"]) == 1
+
+
+def test_run_tick_reentry_cooldown_blocks_immediate_rebuy(monkeypatch):
+    cfg = _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=5)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    # dernière activité sur cette paire il y a 1h -> encore dans le cooldown de 5h
+    fake_db.last_trade_ts_override = {
+        "BTC/USDT": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    }
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+
+    clock.idx += 1
+    result = web_app.run_tick()
+
+    assert result["ok"] is True
+    assert result["open_positions"] == 0
+
+
+def test_run_tick_reentry_cooldown_allows_rebuy_once_elapsed(monkeypatch):
+    cfg = _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=5)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    # dernière activité il y a 10h -> le cooldown de 5h est passé
+    fake_db.last_trade_ts_override = {
+        "BTC/USDT": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
+    }
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+
+    clock.idx += 1
+    result = web_app.run_tick()
+
+    assert result["ok"] is True
+    assert result["open_positions"] == 1
+
+
 def test_run_tick_never_leaves_a_position_with_unresolved_substrategy(monkeypatch):
     with open("config.yaml") as f:
         cfg = yaml.safe_load(f)
@@ -120,14 +318,13 @@ def test_run_tick_never_leaves_a_position_with_unresolved_substrategy(monkeypatc
         assert result["ok"] is True
 
         positions = fake_db.state["positions"] if fake_db.state else {}
-        for symbol, pos in positions.items():
-            if pos is None:
-                continue
-            any_position_opened = True
-            assert pos["active_substrategy"] in ("trend", "range"), (
-                f"{symbol}: active_substrategy={pos['active_substrategy']!r} — "
-                "une position ouverte doit toujours savoir quelle sous-stratégie gère sa sortie"
-            )
+        for symbol, open_positions in positions.items():
+            for pos in open_positions or []:
+                any_position_opened = True
+                assert pos["active_substrategy"] in ("trend", "range"), (
+                    f"{symbol}: active_substrategy={pos['active_substrategy']!r} — "
+                    "une position ouverte doit toujours savoir quelle sous-stratégie gère sa sortie"
+                )
 
     assert any_position_opened, "aucune position ouverte sur 60 ticks : le test ne couvre rien, ajuster les seeds/n"
     assert not fake_db.errors
