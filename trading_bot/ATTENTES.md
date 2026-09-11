@@ -156,59 +156,90 @@ _(à compléter à partir de 20 trades du bot #2 — ne rien conclure avant)_
 
 ---
 
-# Bot #3 — micro-paris diversifiés (10 paires, 10 USDT max/position)
+# Bot #3 — micro-paris diversifiés (18 paires, jusqu'à 3 rachats/paire, 10 USDT max/position)
 
 Troisième bot, avec une méthode de dimensionnement VOLONTAIREMENT
 différente des bots #1 et #2 — voir DEPLOIEMENT.md, "Un troisième bot".
 Au lieu de dimensionner par le risque (% du capital selon la distance du
 stop), chaque position est plafonnée à un **montant fixe** (10 USDT),
-sur un panier de 10 paires, jusqu'à 10 positions simultanées, capital de
-départ 1000 USDT virtuels. Au plus 100 USDT sur 1000 jamais investis en
-même temps.
+capital de départ 1000 USDT virtuels.
+
+## v2 (11/09/2026) — rachat + panier élargi
+
+Cette section **remplace** la version précédente (10 paires, jamais de
+rachat, figée le 11/09/2026 au matin — voir l'historique git de ce
+fichier pour ses chiffres exacts). Changements :
+
+- **Rachat** : une paire peut désormais porter jusqu'à **3 positions
+  simultanées** (`max_positions_per_symbol: 3`), donc jusqu'à 30 USDT sur
+  une seule crypto au lieu de 10.
+- **Cooldown** : `reentry_cooldown_hours: 6` — aucune nouvelle entrée sur
+  une paire dans les 6h suivant la dernière activité (achat OU vente) sur
+  cette même paire. Calé sur le timeframe (bougies 1h) : assez pour ne
+  pas se refaire immédiatement dessus après un stop-loss sur le même
+  bruit, assez court pour rester dans la même tendance journalière.
+- **Panier élargi à 18 paires** (contre 10) : ADA, DOGE, AVAX, DOT, LTC,
+  TRX, ATOM, BCH, ETC, XLM, ALGO, NEAR, FIL, UNI, ICP, ARB, OP, SUI —
+  toutes DISTINCTES des paniers des bots #1 (BTC/ETH/SOL) et #2
+  (BNB/XRP/LINK), choisies parmi les cryptos les plus liquides sur OKX.
+- **`max_concurrent_positions` relevé de 10 à 25** : sans ça, chaque
+  position gardée pour un rachat aurait mangé un slot qui, avant, servait
+  à diversifier sur une paire supplémentaire — brider les deux en même
+  temps aurait vidé l'un ou l'autre de son sens.
 
 ## Provenance des chiffres
 
-Walk-forward sur un an de données réelles OKX (BTC, ETH, SOL, BNB, XRP,
-LINK, ADA, DOGE, AVAX, DOT en 1h), 9 fenêtres hors-échantillon de 30
-jours. Historique exporté via GitHub Actions run `34579866367` le
-11/09/2026, calcul local sur le commit `e49023c` (celui qui introduit
-`max_position_notional_usd`). Fenêtres calculées un jour après celles des
-bots #1/#2 (11/09 contre 10/09) — comparaison directionnelle valable,
-pas chiffre à chiffre.
+Walk-forward sur un an de données réelles OKX (les 18 paires ci-dessus,
+en 1h), 9 fenêtres hors-échantillon de 30 jours, entraînement sur 90
+jours glissants. Historique exporté via GitHub Actions run `34586668527`
+le 11/09/2026, calcul local sur le commit `6415794` (celui qui introduit
+le mécanisme générique `max_positions_per_symbol`/`reentry_cooldown_hours`,
+juste avant ce commit-ci qui l'applique au bot #3).
 
-Résultat agrégé : **−0,54%** composé sur les 9 fenêtres, **329 trades**
-(~36,6/mois), taux de gain 34,3%, pire drawdown **−0,53%**.
+Deux invariants vérifiés indépendamment sur les trades produits par CE
+run (pas seulement testés sur des données synthétiques) : jamais plus de
+3 positions simultanées sur une même paire, jamais un rachat à moins de
+6h de la dernière activité sur cette paire — 0 violation sur les deux.
+
+Résultat agrégé : **−1,25%** composé sur les 9 fenêtres (contre −0,54%
+pour la v1 à 10 paires/pas de rachat), pendant que le buy & hold moyen de
+ces 18 paires faisait **−30,74%**. **830 trades** (~92,2/mois — bien plus
+que les ~36,6/mois de la v1 : panier 1,8x plus large, jusqu'à 3 positions
+par paire, cooldown de seulement 6h), taux de gain 34,3% (identique à la
+v1), pire drawdown **−1,09%** (contre −0,53% pour la v1 — le rachat
+augmente mécaniquement l'exposition maximale possible sur une paire,
+30 USDT contre 10, donc un peu plus de capital en jeu au pire moment).
+Sorties : 65,5% stop-loss, 34,2% objectif, 0,2% signal.
 
 ## ⚠️ Ce que ce résultat NE prouve PAS
 
-Le rendement proche de zéro et le drawdown minuscule (−0,53%, contre
-−3,2% pour le bot #1 et −5,1% pour le bot #2) ne sont **pas** un signe
-que cette approche est plus sûre ou plus intelligente. C'est un effet
-**mécanique** : avec 10 USDT plafonnés par position sur 1000 USDT de
-capital, la perte totale sur TOUTE la période de test n'a été que de
-**5,40 USDT**. Le résultat est proche de zéro parce que presque rien n'a
-jamais été réellement en jeu — pas parce que la stratégie a mieux
-fonctionné sur ce panier. Ne jamais présenter "plus petit drawdown" comme
-une victoire pour ce bot en particulier : c'est la conséquence directe et
-attendue de la taille des mises, pas une découverte sur le marché.
-
-Ce que ce bot mesure vraiment : le comportement RELATIF de la stratégie
-sur 10 paires en parallèle (quelles paires génèrent le plus de signaux,
-lesquelles gagnent/perdent le plus souvent) — utile pour apprendre, pas
-pour juger si "ça marche mieux à 10 paires qu'à 3".
+Comme pour la v1, le drawdown encore petit en valeur absolue (−1,09%,
+contre −3,2% pour le bot #1 et −5,1% pour le bot #2) reste **en grande
+partie un effet mécanique** du plafond à 10 USDT/position — même avec le
+rachat, l'exposition maximale théorique par paire (30 USDT) reste minime
+face au capital total (1000 USDT). Ne jamais présenter "petit drawdown"
+comme une victoire de la stratégie sur ce bot. Ce qui a changé par
+rapport à la v1 : le rendement composé est PLUS négatif (−1,25% contre
+−0,54%) et le pire drawdown PLUS profond (−1,09% contre −0,53%) — le
+rachat n'a pas amélioré le résultat sur cette période, il a surtout
+multiplié le nombre de trades. Ce bot mesure toujours le comportement
+RELATIF de la stratégie sur un large panier (et maintenant, avec rachat)
+— utile pour apprendre, pas pour juger si "racheter marche mieux".
 
 ## Ce qu'on attend en réel
 
 | Métrique | Attendu |
 |---|---|
-| Trades | ~37 par mois (bien plus que les bots #1/#2 — 10 paires, positions minuscules) |
+| Trades | ~92 par mois (nettement plus que la v1 et que les bots #1/#2) |
 | Trades gagnants | 34,3% |
 | Sorties sur stop-loss | ~66% |
 | Sorties sur objectif | ~34% |
 | Part max d'une position | 10 USDT fixes, jamais plus — PAS une part du capital |
-| Positions simultanées | jusqu'à 10 |
-| Pire drawdown | proche de 0% par construction (voir avertissement ci-dessus) |
-| Rendement | proche de 0%, dans les deux sens — l'ampleur en dollars compte plus que le % ici |
+| Positions simultanées (toutes paires) | jusqu'à 25 |
+| Positions simultanées (une même paire) | jusqu'à 3 (30 USDT max sur une crypto) |
+| Cooldown de rachat | jamais moins de 6h entre deux activités sur la même paire |
+| Pire drawdown | proche de 0% par construction, mais plus marqué qu'en v1 (voir avertissement) |
+| Rendement | proche de 0% à légèrement négatif — l'ampleur en dollars compte plus que le % ici |
 
 ## Ce qui invaliderait la configuration (pas seulement la stratégie)
 
@@ -219,17 +250,20 @@ mélangé aux comptages des bots #1/#2) :
 - **Une position au-dessus de 10 USDT observée** → bug du plafond fixe,
   pas un résultat de marché : c'est LE mécanisme central de ce bot, une
   violation ici est plus grave que pour les bots #1/#2.
-- **Plus de 10 positions simultanées** → `max_concurrent_positions` non
-  respecté, bug de portefeuille.
-- **Un nombre de trades très inférieur à 37/mois** → les minimums d'ordre
+- **Plus de 3 positions simultanées sur une même paire** →
+  `max_positions_per_symbol` non respecté, bug de portefeuille.
+- **Un rachat à moins de 6h de la dernière activité sur cette paire** →
+  `reentry_cooldown_hours` non respecté, bug de portefeuille.
+- **Plus de 25 positions simultanées au total** →
+  `max_concurrent_positions` non respecté, bug de portefeuille.
+- **Un nombre de trades très inférieur à 92/mois** → les minimums d'ordre
   de l'exchange (`min_cost`/`min_amount`) rejettent probablement une
-  bonne partie des signaux à 10 USDT — sur certaines paires, 10 USDT peut
-  être sous le plancher réel de l'exchange. Si observé, le dire
-  explicitement plutôt que de laisser croire à un filtre de marché plus
-  strict que prévu.
-- Un drawdown ou un rendement qui s'écarte nettement de "proche de zéro"
-  → contredit directement l'effet mécanique attendu ci-dessus, signe que
-  quelque chose dans le dimensionnement ne fonctionne pas comme prévu.
+  bonne partie des signaux à 10 USDT sur certaines des nouvelles paires.
+  Si observé, le dire explicitement plutôt que de laisser croire à un
+  filtre de marché plus strict que prévu.
+- Un drawdown ou un rendement qui s'écarte nettement des chiffres
+  ci-dessus → signe que quelque chose dans le dimensionnement ou le
+  rachat ne fonctionne pas comme prévu.
 
 ## Rappel de méthode
 
@@ -240,7 +274,9 @@ BEAUCOUP de trades avant que quoi que ce soit ici soit interprétable.
 
 ## Résultats observés
 
-_(à compléter à partir de 20 trades du bot #3 — ne rien conclure avant)_
+_(à compléter à partir de 20 trades du bot #3 EN v2 — les trades
+accumulés sous la v1, si il y en a, ne doivent pas être mélangés à ce
+comptage : la configuration a changé)_
 
 | Date | Trades | Gagnants | Pire DD | Position max observée | Écart aux attentes |
 |---|---|---|---|---|---|

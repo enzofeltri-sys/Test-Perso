@@ -563,12 +563,25 @@ Même principe que le bot #2 (voir la section précédente), avec une
 méthode de dimensionnement VOLONTAIREMENT différente : au lieu de
 dimensionner par le risque (% du capital selon la distance du stop),
 chaque position est plafonnée à un **montant fixe** (`max_position_
-notional_usd: 10` dans `config_bot3.yaml`), sur un panier de 10 paires,
-jusqu'à 10 positions simultanées. But : observer le comportement de la
-stratégie diversifié sur beaucoup de paires à la fois, pas augmenter les
-gains — voir `ATTENTES.md`, section "Bot #3", et son avertissement :
+notional_usd: 10` dans `config_bot3.yaml`). But : observer le comportement
+de la stratégie diversifié sur beaucoup de paires à la fois, pas augmenter
+les gains — voir `ATTENTES.md`, section "Bot #3", et son avertissement :
 le drawdown minuscule attendu est un effet MÉCANIQUE des petites mises,
 pas une preuve que cette configuration est meilleure.
+
+**v2 (11/09/2026) — rachat + panier élargi.** `config_bot3.yaml` a été mis
+à jour : une paire peut désormais porter jusqu'à 3 positions simultanées
+(`max_positions_per_symbol: 3`, donc jusqu'à 30 USDT sur une seule crypto
+au lieu de 10), avec un cooldown de 6h entre deux entrées sur la même
+paire (`reentry_cooldown_hours`). Le panier passe de 10 à 18 paires
+(toutes distinctes des bots #1/#2). `max_concurrent_positions` est relevé
+de 10 à 25 en conséquence. **Aucune migration SQL requise** : la colonne
+`microbot_state.positions` reste un `jsonb` brut, seule sa FORME change
+côté code (une liste de positions par paire au lieu d'un objet unique) —
+une position déjà ouverte au moment du déploiement est migrée
+automatiquement au premier `/tick` suivant (voir `_normalize_positions`
+dans `web_app.py`), rien à faire manuellement. Voir `ATTENTES.md` pour les
+chiffres figés avant ce déploiement.
 
 ### Étape 1 — les tables du bot #3
 

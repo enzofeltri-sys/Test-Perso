@@ -8,13 +8,24 @@
 # ceux-là dimensionnent par le risque (% du capital selon la distance du
 # stop, plafonné à 25% du capital). Ici, CHAQUE position est plafonnée à
 # un MONTANT FIXE (max_position_notional_usd: 10 USDT), quel que soit le
-# stop ou le capital — jusqu'à 10 paires simultanées (max_concurrent_
-# positions: 10), donc au plus 100 USDT sur 1000 jamais investis en même
-# temps. C'est une expérience de diversification extrême par petites
-# mises identiques, pas une façon d'augmenter les gains — voir
-# ATTENTES.md, section "Bot #3", pour ce que le walk-forward en attend
-# RÉELLEMENT (rendement quasi nul, mais pour une raison mécanique : si peu
-# de capital est jamais engagé que le résultat ne valide quasiment rien).
+# stop ou le capital.
+#
+# v2 (11/09/2026) — RACHAT + panier élargi, voir ATTENTES.md section
+# "Bot #3" pour la version figée AVANT ce changement (la précédente
+# jusqu'à 10 paires, jamais de rachat) :
+#   - une paire peut désormais porter jusqu'à 3 positions simultanées
+#     (max_positions_per_symbol: 3), donc jusqu'à 30 USDT max sur UNE
+#     seule crypto au lieu de 10 — voir max_positions_per_symbol plus bas.
+#   - un cooldown (reentry_cooldown_hours) empêche un rachat immédiat sur
+#     la même paire juste après un stop-loss/take-profit sur le même bruit
+#     de marché.
+#   - le panier passe de 10 à 18 paires, pour ne pas brider la
+#     diversification maintenant qu'une partie des slots peut servir au
+#     rachat plutôt qu'à une nouvelle paire — voir max_concurrent_positions
+#     plus bas, relevé en conséquence.
+# Toujours une expérience de diversification/comportement, pas une façon
+# d'augmenter les gains — voir ATTENTES.md pour l'avertissement sur ce que
+# le faible drawdown de ce bot NE prouve PAS.
 #
 # =============================================================
 # Configuration du bot de trading
@@ -55,23 +66,44 @@ exchange:
 # seul actif (voir README, section "Portefeuille").
 # ---------------------------------------------------------------
 portfolio:
+  # 18 paires, DISTINCTES des paniers des bots #1 (BTC/ETH/SOL) et #2
+  # (BNB/XRP/LINK) — jamais dupliquer une même exposition sur les 3 bots.
+  # Choisies parmi les cryptos les plus liquides sur OKX avec un
+  # historique bien au-delà d'un an (voir backtest.since_days).
   symbols:
-    - BTC/USDT
-    - ETH/USDT
-    - SOL/USDT
-    - BNB/USDT
-    - XRP/USDT
-    - LINK/USDT
     - ADA/USDT
     - DOGE/USDT
     - AVAX/USDT
     - DOT/USDT
-  # jusqu'à 10 paires simultanées : contrairement aux bots #1/#2, le
-  # plafond qui protège ici n'est PAS ce réglage, c'est
-  # max_position_notional_usd plus bas (10 USDT/position) — sans lui
-  # relâcher, un plafond à 2 laisserait 98% du capital inutilisé et
-  # viderait l'expérience de diversification de son sens.
-  max_concurrent_positions: 10
+    - LTC/USDT
+    - TRX/USDT
+    - ATOM/USDT
+    - BCH/USDT
+    - ETC/USDT
+    - XLM/USDT
+    - ALGO/USDT
+    - NEAR/USDT
+    - FIL/USDT
+    - UNI/USDT
+    - ICP/USDT
+    - ARB/USDT
+    - OP/USDT
+    - SUI/USDT
+  # Relevé de 10 à 25 avec le passage au rachat (v2, voir en-tête) : sans
+  # ça, chaque position gardée sur une paire pour un rachat (jusqu'à 3,
+  # voir max_positions_per_symbol) mangerait un slot qui, avant, servait
+  # à diversifier sur une paire supplémentaire — brider les deux en même
+  # temps aurait vidé soit le rachat, soit la diversification de son sens.
+  # Toujours PAS le plafond qui protège le capital : c'est
+  # max_position_notional_usd (10 USDT/position) plus bas.
+  max_concurrent_positions: 25
+  # Combien de positions SIMULTANÉES une même paire peut porter à la fois.
+  # 1 (comportement historique, bots #1/#2) = jamais de rachat tant qu'une
+  # position sur cette paire est ouverte. Ici, 3 : jusqu'à 3 x 10 USDT =
+  # 30 USDT max sur UNE seule crypto, pour capter un signal qui se répète
+  # sur la même paire (ex: plusieurs creux successifs dans une tendance)
+  # sans attendre la clôture de la position précédente.
+  max_positions_per_symbol: 3
   momentum_lookback: 20         # sert à départager plusieurs signaux simultanés (le plus fort momentum d'abord)
 
 # ---------------------------------------------------------------
@@ -157,6 +189,13 @@ risk:
   max_total_drawdown_pct: 0.20 # coupe-circuit TOTAL : arrête définitivement (jusqu'à révision manuelle) après -20% depuis le plus haut
   max_correlation_for_new_position: 0.75  # refuse une nouvelle position trop corrélée à une position déjà ouverte (null pour désactiver)
   correlation_lookback: 30     # nb de bougies utilisées pour estimer la corrélation glissante entre deux paires
+  # Délai minimum, en heures, entre la DERNIÈRE activité (achat OU vente)
+  # sur une paire et un rachat sur cette même paire — calé sur le
+  # timeframe (bougies 1h) : 6 bougies, assez pour ne pas immédiatement
+  # se refaire dessus après un stop-loss sur le même bruit de marché,
+  # assez court pour rester dans la même tendance journalière si le
+  # signal se répète. `null` pour désactiver (défaut, bots #1/#2).
+  reentry_cooldown_hours: 6
 
 backtest:
   since_days: 365          # profondeur d'historique à télécharger, par paire
