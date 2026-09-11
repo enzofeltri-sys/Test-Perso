@@ -959,6 +959,64 @@ def test_all_route_has_pull_to_refresh_like_every_bot_s_own_page(monkeypatch):
     assert "touchstart" in html and "touchend" in html
 
 
+def test_all_route_shows_every_range_tab_with_tout_selected_by_default(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 1000.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01,
+             "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
+        ],
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    for label in ("24h", "1 semaine", "1 mois", "3 mois", "6 mois", "1 an", "Tout"):
+        assert label in html
+
+    import re
+    panels = dict(re.findall(r'data-range="(\w+)" role="tabpanel"\s*(hidden)?>', html))
+    assert not panels["tout"], "le panneau Tout doit être visible par défaut"
+    assert all(panels[k] == "hidden" for k in panels if k != "tout"), (
+        "toutes les autres fenêtres doivent démarrer cachées"
+    )
+    assert len(panels) == 7
+
+
+def test_all_route_filters_old_trades_out_of_short_ranges_but_keeps_tout(monkeypatch):
+    """Un trade vieux de plus d'un an ne doit apparaître QUE dans "Tout" —
+    les fenêtres plus courtes (24h à 1 an) doivent montrer l'état vide."""
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat().replace("+00:00", "Z")
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 1000.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01,
+             "ts": old_ts, "equity_after": 1000.0},
+        ],
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert html.count("Aucun trade sur cette période.") == 6  # 24h, 7j, 1m, 3m, 6m, 1a
+    assert "<svg" in html  # le panneau "Tout", lui, a bien un graphique
+
+
+def test_all_route_falls_back_to_the_empty_state_when_nothing_has_ever_traded(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": None, "tradingbot_trades": None,
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert "Aucun trade sur aucun bot pour l'instant" in html
+    assert 'class="range-tab' not in html
+
+
 # --------------------------------------------------------------------
 # _nice_step / _build_equity_chart_svg — géométrie du graphique combiné
 # --------------------------------------------------------------------

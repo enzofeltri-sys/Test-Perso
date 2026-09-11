@@ -777,6 +777,23 @@ BOT_REGISTRY = [
     {"prefix": "microbot", "label": "Bot #3 — 24 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com"},
 ]
 
+# Fenêtres du graphique combiné de /all : (clé, libellé, delta depuis
+# maintenant — None = tout l'historique). "Tout" est la fenêtre par
+# défaut : à la fréquence de trading de ces bots (quelques trades par
+# semaine chacun), une fenêtre courte comme 24h peut n'avoir AUCUN point
+# la plupart du temps — "Tout" garantit qu'il y a quelque chose à
+# afficher dès qu'un seul trade a eu lieu.
+CHART_RANGES = [
+    ("24h", "24h", timedelta(hours=24)),
+    ("7j", "1 semaine", timedelta(days=7)),
+    ("1m", "1 mois", timedelta(days=30)),
+    ("3m", "3 mois", timedelta(days=90)),
+    ("6m", "6 mois", timedelta(days=180)),
+    ("1a", "1 an", timedelta(days=365)),
+    ("tout", "Tout", None),
+]
+DEFAULT_CHART_RANGE = "tout"
+
 
 def _fetch_bot_summary(prefix: str) -> dict:
     """Lit l'essentiel d'UN bot par son préfixe de table, en lecture seule,
@@ -1003,6 +1020,13 @@ ALL_PAGE = """<!doctype html>
   .legend{ display:flex; gap:18px; flex-wrap:wrap; margin-bottom:14px; }
   .legend-item{ display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--text-muted); }
   .legend-dot{ width:9px; height:9px; border-radius:50%; display:inline-block; flex-shrink:0; }
+  .range-tabs{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+  .range-tab{
+    font-family:"IBM Plex Sans", sans-serif; font-size:0.76rem; font-weight:500;
+    padding:5px 12px; border-radius:999px; border:1px solid var(--rule);
+    background:transparent; color:var(--text-muted); cursor:pointer;
+  }
+  .range-tab.active{ background:var(--accent); border-color:var(--accent); color:#fff; }
   footer{ margin-top:40px; font-size:0.78rem; color:var(--text-faint); text-align:center; }
   footer a{ color:inherit; }
 
@@ -1028,13 +1052,26 @@ ALL_PAGE = """<!doctype html>
   <div class="chart-card">
     <h2>Évolution du capital</h2>
     <p class="chart-sub">Un point par trade réellement exécuté — pas une estimation entre deux trades. La ligne fine horizontale marque les 1000$ de départ commun aux 3 bots.</p>
-    {% if chart_svg %}
+    {% if has_any_data %}
       <div class="legend">
         {% for b in bots %}
         <span class="legend-item"><span class="legend-dot" style="background:var({{ b.color_var }})"></span>{{ b.label.split(' — ')[0] }}</span>
         {% endfor %}
       </div>
-      {{ chart_svg|safe }}
+      <div class="range-tabs" role="tablist">
+        {% for c in charts %}
+        <button type="button" class="range-tab{{ ' active' if c.key == default_range else '' }}" data-range="{{ c.key }}" role="tab" aria-selected="{{ 'true' if c.key == default_range else 'false' }}">{{ c.label }}</button>
+        {% endfor %}
+      </div>
+      {% for c in charts %}
+      <div class="range-panel" data-range="{{ c.key }}" role="tabpanel" {{ '' if c.key == default_range else 'hidden' }}>
+        {% if c.svg %}
+          {{ c.svg|safe }}
+        {% else %}
+          <p class="empty">Aucun trade sur cette période.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
     {% else %}
       <p class="empty">Aucun trade sur aucun bot pour l'instant — le graphique apparaîtra dès le premier.</p>
     {% endif %}
@@ -1119,6 +1156,23 @@ ALL_PAGE = """<!doctype html>
     }
   });
 })();
+
+// Bascule entre les graphiques déjà rendus (un par fenêtre temporelle,
+// voir CHART_RANGES côté serveur) — pas de recalcul en JS, juste montrer/
+// cacher le <div> déjà construit pour la fenêtre choisie.
+document.querySelectorAll(".range-tab").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    document.querySelectorAll(".range-tab").forEach(function (b) {
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    });
+    document.querySelectorAll(".range-panel").forEach(function (p) { p.hidden = true; });
+    btn.classList.add("active");
+    btn.setAttribute("aria-selected", "true");
+    var panel = document.querySelector('.range-panel[data-range="' + btn.dataset.range + '"]');
+    if (panel) panel.hidden = false;
+  });
+});
 </script>
 """
 
@@ -1141,8 +1195,28 @@ def all_bots():
             if points:
                 chart_series.append({"label": b["label"].split(" — ")[0], "color_var": color_var, "points": points})
 
-        chart_svg = _build_equity_chart_svg(chart_series)
-        return render_template_string(ALL_PAGE, bots=bots, chart_svg=chart_svg), 200
+        # Un graphique par fenêtre temporelle (voir CHART_RANGES), construit
+        # une fois pour toutes ici plutôt que recalculé côté client : /all
+        # reste sans dépendance JS pour ses données, seul le BASCULEMENT
+        # entre graphiques déjà rendus se fait en JS (voir ALL_PAGE).
+        now = datetime.now(timezone.utc)
+        charts = []
+        for key, label, delta in CHART_RANGES:
+            if delta is None:
+                windowed = chart_series
+            else:
+                cutoff = now - delta
+                windowed = [
+                    {**s, "points": [(t, v) for t, v in s["points"] if t >= cutoff]}
+                    for s in chart_series
+                ]
+                windowed = [s for s in windowed if s["points"]]
+            charts.append({"key": key, "label": label, "svg": _build_equity_chart_svg(windowed)})
+
+        return render_template_string(
+            ALL_PAGE, bots=bots, charts=charts, has_any_data=bool(chart_series),
+            default_range=DEFAULT_CHART_RANGE,
+        ), 200
     except Exception:
         return "OK - vue d'ensemble indisponible pour le moment.", 200
 
