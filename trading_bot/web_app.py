@@ -729,11 +729,11 @@ def _fetch_bot_summary(prefix: str) -> dict:
     AUTRE bot). Best-effort partout : une table pas encore migrée ne doit
     jamais faire échouer la page pour les bots qui, eux, existent déjà.
 
-    Un seul appel `trades` (croissant, jusqu'à 500) sert trois besoins à la
-    fois : les derniers trades affichés (on en reprend la queue), le compte
-    des positions clôturées (les ventes), et la courbe d'équité du
-    graphique — sur les volumes réels de ce projet (dizaines de trades par
-    mois), 500 couvre largement plusieurs mois d'historique en une requête."""
+    /all n'affiche que le statut (en ligne / coupe-circuit) et le graphique
+    d'équity — le détail (cash, positions, trades, journal) est déjà sur la
+    page propre à chaque bot, à un clic ; le dupliquer ici serait juste du
+    bruit. `trades` (croissant, jusqu'à 500) ne sert donc qu'à construire la
+    courbe d'équity du graphique."""
     def _get(table, params):
         try:
             resp = requests.get(f"{db._base_url()}/{prefix}_{table}", headers=db._headers(),
@@ -746,26 +746,13 @@ def _fetch_bot_summary(prefix: str) -> dict:
     state_rows = _get("state", {"id": "eq.default", "select": "*"})
     state = (state_rows or [{}])[0] if state_rows else {}
     trades_asc = _get("trades", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
-    journal = _get("journal", {"select": "*", "order": "ts.desc", "limit": "5"}) or []
 
-    positions = (state or {}).get("positions") or {}
     healthy = state is not None and not (state.get("daily_tripped_today") or state.get("total_dd_tripped"))
-    recent_trades = list(reversed(trades_asc))[:5]
 
     return {
         "found": state_rows is not None,
         "healthy": healthy,
         "total_dd_tripped": bool((state or {}).get("total_dd_tripped")),
-        "cash": (state or {}).get("cash"),
-        "open_positions": len(positions),
-        "closed_positions": sum(1 for t in trades_asc if t.get("side") == "sell"),
-        "trades": [{
-            "symbol": t.get("symbol"), "side": t.get("side"), "reason": t.get("reason"),
-            "price": t.get("price"), "qty": t.get("qty"), "ts": _fmt_ts(t.get("ts")),
-        } for t in recent_trades],
-        "journal": [{
-            "ts": _fmt_ts(j.get("ts")), "author": j.get("author"), "message": j.get("message"),
-        } for j in journal],
         # (ts brut, equity_after) — matière première du graphique, jamais
         # affiché directement ; on garde le ts ISO ici, l'analyse (parsing,
         # échelle) est isolée dans _build_equity_chart_svg pour rester testable.
@@ -934,20 +921,10 @@ ALL_PAGE = """<!doctype html>
   .bot{ background:var(--card); border-radius:14px; padding:22px 22px 20px; margin-bottom:20px; }
   .bot-head{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:14px; }
   .bot-name{ font-weight:500; font-size:1.02rem; }
-  .status-line{ display:flex; align-items:baseline; gap:8px; font-size:0.82rem; color:var(--text-muted); margin-bottom:16px; }
+  .status-line{ display:flex; align-items:baseline; gap:8px; font-size:0.82rem; color:var(--text-muted); flex-shrink:0; }
   .dot{ width:6px; height:6px; border-radius:50%; display:inline-block; }
   .dot.ok{ background:var(--green); } .dot.bad{ background:var(--red); } .dot.unknown{ background:var(--text-faint); }
-  .stats-row{ display:flex; gap:24px; margin-bottom:16px; flex-wrap:wrap; }
-  .stat .n{ font-size:0.72rem; color:var(--text-muted); margin-bottom:2px; }
-  .stat .v{ font-family:"IBM Plex Mono", monospace; font-variant-numeric:tabular-nums; font-size:0.98rem; }
-  .label{ font-size:0.72rem; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.08em; margin:14px 0 6px; }
-  .row{ padding:8px 0; font-size:0.85rem; }
-  .row + .row{ border-top:1px solid var(--rule); }
-  .row .name{ font-weight:500; }
-  .row .detail{ font-size:0.76rem; color:var(--text-muted); margin-top:1px; }
-  .side{ font-family:"IBM Plex Mono", monospace; font-size:0.72rem; }
-  .side.buy{ color:var(--green); } .side.sell{ color:var(--red); }
-  .empty{ font-size:0.82rem; color:var(--text-faint); }
+  .empty{ font-size:0.82rem; color:var(--text-faint); margin-bottom:14px; }
   .bot-link{
     display:inline-flex; align-items:center; gap:6px; margin-top:16px;
     padding:9px 14px; border-radius:9px; background:var(--bg);
@@ -961,7 +938,21 @@ ALL_PAGE = """<!doctype html>
   .legend-dot{ width:9px; height:9px; border-radius:50%; display:inline-block; flex-shrink:0; }
   footer{ margin-top:40px; font-size:0.78rem; color:var(--text-faint); text-align:center; }
   footer a{ color:inherit; }
+
+  #pull-indicator{
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    display:flex; align-items:center; justify-content:center;
+    height:52px; margin-top:-52px;
+    font-family:"IBM Plex Mono", monospace; font-size:0.72rem;
+    letter-spacing:0.08em; text-transform:uppercase; color:var(--text-muted);
+    transition:transform 0.15s ease-out;
+    pointer-events:none;
+  }
+  #pull-indicator.armed{ color:var(--accent); }
+  @media (prefers-reduced-motion: reduce){ #pull-indicator{ transition:none; } }
 </style>
+
+<div id="pull-indicator">tirer pour rafraîchir</div>
 
 <div class="wrap">
   <p class="kicker">Vue d'ensemble</p>
@@ -986,11 +977,8 @@ ALL_PAGE = """<!doctype html>
   <div class="bot">
     <div class="bot-head">
       <span class="bot-name"><span class="legend-dot" style="background:var({{ b.color_var }})"></span> {{ b.label }}</span>
-    </div>
-    {% if not b.summary.found %}
-      <p class="empty">Aucune donnée pour l'instant — tables pas encore migrées ou service pas encore déployé.</p>
-    {% else %}
-      <div class="status-line">
+      {% if b.summary.found %}
+      <span class="status-line">
         <span class="dot {{ 'bad' if b.summary.total_dd_tripped else ('ok' if b.summary.healthy else 'bad') }}"></span>
         {% if b.summary.total_dd_tripped %}
           <strong>Coupe-circuit total déclenché</strong>
@@ -999,34 +987,11 @@ ALL_PAGE = """<!doctype html>
         {% else %}
           Coupe-circuit journalier déclenché
         {% endif %}
-      </div>
-      <div class="stats-row">
-        <div class="stat"><div class="n">Cash</div><div class="v">{{ '$%.2f'|format(b.summary.cash) if b.summary.cash is not none else '—' }}</div></div>
-        <div class="stat"><div class="n">Positions ouvertes</div><div class="v">{{ b.summary.open_positions }}</div></div>
-        <div class="stat"><div class="n">Positions clôturées</div><div class="v">{{ b.summary.closed_positions }}</div></div>
-      </div>
-      <p class="label">Derniers trades</p>
-      {% if b.summary.trades %}
-        {% for t in b.summary.trades %}
-        <div class="row">
-          <div class="name">{{ t.symbol }} <span class="side mono {{ t.side }}">{{ t.side }}</span></div>
-          <div class="detail">{{ t.ts }} · {{ t.reason }} · {{ '%.6f'|format(t.qty) }} @ ${{ '%.2f'|format(t.price) }}</div>
-        </div>
-        {% endfor %}
-      {% else %}
-        <p class="empty">Aucun trade pour l'instant.</p>
+      </span>
       {% endif %}
-      <p class="label">Journal</p>
-      {% if b.summary.journal %}
-        {% for j in b.summary.journal %}
-        <div class="row">
-          <div class="detail">{{ j.ts }} · {{ j.author }}</div>
-          <div class="name" style="font-weight:400;">{{ j.message }}</div>
-        </div>
-        {% endfor %}
-      {% else %}
-        <p class="empty">Aucune entrée pour l'instant.</p>
-      {% endif %}
+    </div>
+    {% if not b.summary.found %}
+      <p class="empty">Aucune donnée pour l'instant — tables pas encore migrées ou service pas encore déployé.</p>
     {% endif %}
     <a class="bot-link" href="{{ b.url }}">Voir la page complète de {{ b.label.split(' — ')[0] }} →</a>
   </div>
@@ -1034,8 +999,53 @@ ALL_PAGE = """<!doctype html>
 
   <footer>
     <p>Lecture seule — ne déclenche aucun cycle. Chaque bot garde son propre <span class="mono">/tick</span> et son propre déploiement, indépendamment de cette page.</p>
+    <p>Tire vers le bas en haut de la page pour rafraîchir.</p>
   </footer>
 </div>
+
+<script>
+(function () {
+  // "Tirer pour rafraîchir" en JS : nécessaire dès que la page est ouverte
+  // en PWA/écran d'accueil (pas de barre de navigateur pour tirer dessus),
+  // et fonctionne aussi dans un onglet de navigateur classique. Même
+  // mécanisme que la page de chaque bot (voir STATUS_PAGE).
+  var indicator = document.getElementById("pull-indicator");
+  var THRESHOLD = 70;
+  var startY = null;
+  var pulling = false;
+
+  document.addEventListener("touchstart", function (e) {
+    if (window.scrollY <= 0) {
+      startY = e.touches[0].clientY;
+      pulling = true;
+    }
+  }, { passive: true });
+
+  document.addEventListener("touchmove", function (e) {
+    if (!pulling || startY === null) return;
+    var dy = e.touches[0].clientY - startY;
+    if (dy <= 0) { indicator.style.transform = ""; indicator.classList.remove("armed"); return; }
+    var pull = Math.min(dy, THRESHOLD * 1.6);
+    indicator.style.transform = "translateY(" + pull + "px)";
+    indicator.textContent = dy > THRESHOLD ? "relâcher pour rafraîchir" : "tirer pour rafraîchir";
+    indicator.classList.toggle("armed", dy > THRESHOLD);
+  }, { passive: true });
+
+  document.addEventListener("touchend", function (e) {
+    if (!pulling || startY === null) return;
+    var dy = (e.changedTouches[0].clientY - startY);
+    pulling = false;
+    startY = null;
+    if (dy > THRESHOLD) {
+      indicator.textContent = "actualisation…";
+      window.location.reload();
+    } else {
+      indicator.style.transform = "";
+      indicator.classList.remove("armed");
+    }
+  });
+})();
+</script>
 """
 
 

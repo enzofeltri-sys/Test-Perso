@@ -622,38 +622,37 @@ def _fake_requests_get(monkeypatch, tables):
 
 
 def test_fetch_bot_summary_reads_the_given_prefix_only(monkeypatch):
+    """/all n'affiche que le statut + le graphique — le détail (cash, positions,
+    trades, journal) reste sur la page propre à chaque bot, à un clic. Donc plus
+    besoin de lire la table journal ici."""
     calls = _fake_requests_get(monkeypatch, {
         "altbot_state": [{"cash": 850.0, "positions": {"BNB/USDT": {}}, "daily_tripped_today": False, "total_dd_tripped": False}],
-        "altbot_trades": [{"symbol": "BNB/USDT", "side": "buy", "reason": "signal", "price": 600.0, "qty": 0.01, "ts": "2026-09-11T07:00:00Z"}],
-        "altbot_journal": [{"ts": "2026-09-11T07:00:00Z", "author": "bot", "message": "Achat BNB/USDT"}],
+        "altbot_trades": [{"symbol": "BNB/USDT", "side": "buy", "reason": "signal", "price": 600.0, "qty": 0.01, "ts": "2026-09-11T07:00:00Z", "equity_after": 994.0}],
     })
 
     summary = web_app._fetch_bot_summary("altbot")
 
-    assert calls == ["altbot_state", "altbot_trades", "altbot_journal"]
+    assert calls == ["altbot_state", "altbot_trades"]
     assert summary["found"] is True
     assert summary["healthy"] is True
-    assert summary["cash"] == 850.0
-    assert summary["open_positions"] == 1
-    assert summary["trades"][0]["symbol"] == "BNB/USDT"
-    assert summary["journal"][0]["message"] == "Achat BNB/USDT"
+    assert summary["equity_points"] == [("2026-09-11T07:00:00Z", 994.0)]
 
 
 def test_fetch_bot_summary_degrades_gracefully_when_table_is_missing(monkeypatch):
     """Un bot pas encore migré ne doit jamais faire planter la vue combinée
     pour les bots qui, eux, existent déjà."""
-    _fake_requests_get(monkeypatch, {"microbot_state": None, "microbot_trades": None, "microbot_journal": None})
+    _fake_requests_get(monkeypatch, {"microbot_state": None, "microbot_trades": None})
 
     summary = web_app._fetch_bot_summary("microbot")
 
     assert summary["found"] is False
-    assert summary["trades"] == [] and summary["journal"] == []
+    assert summary["equity_points"] == []
 
 
 def test_fetch_bot_summary_flags_total_drawdown_as_unhealthy(monkeypatch):
     _fake_requests_get(monkeypatch, {
         "tradingbot_state": [{"cash": 500.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": True}],
-        "tradingbot_trades": [], "tradingbot_journal": [],
+        "tradingbot_trades": [],
     })
 
     summary = web_app._fetch_bot_summary("tradingbot")
@@ -662,13 +661,30 @@ def test_fetch_bot_summary_flags_total_drawdown_as_unhealthy(monkeypatch):
     assert summary["total_dd_tripped"] is True
 
 
+def test_fetch_bot_summary_builds_equity_points_in_chronological_order(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 900.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01, "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
+            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
+        ],
+    })
+
+    summary = web_app._fetch_bot_summary("tradingbot")
+
+    assert summary["equity_points"] == [
+        ("2026-09-01T00:00:00Z", 1000.0),
+        ("2026-09-02T00:00:00Z", 1010.0),
+    ]
+
+
 def test_all_route_shows_every_bot_even_when_one_has_no_data(monkeypatch):
     _fake_requests_get(monkeypatch, {
         "tradingbot_state": [{"cash": 950.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
-        "tradingbot_trades": [], "tradingbot_journal": [],
+        "tradingbot_trades": [],
         "altbot_state": [{"cash": 900.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
-        "altbot_trades": [], "altbot_journal": [],
-        "microbot_state": None, "microbot_trades": None, "microbot_journal": None,
+        "altbot_trades": [],
+        "microbot_state": None, "microbot_trades": None,
     })
 
     client = web_app.app.test_client()
@@ -677,8 +693,30 @@ def test_all_route_shows_every_bot_even_when_one_has_no_data(monkeypatch):
 
     assert resp.status_code == 200
     assert "Bot #1" in html and "Bot #2" in html and "Bot #3" in html
-    assert "$950.00" in html and "$900.00" in html
+    assert "En ligne" in html
     assert "Aucune donnée pour l'instant" in html  # bot #3, pas encore migré
+
+
+def test_all_route_never_shows_per_bot_detail_now_that_the_full_site_is_a_click_away(monkeypatch):
+    """/all reste une vue d'ensemble : cash, positions, derniers trades et
+    journal sont déjà sur la page complète de chaque bot (le lien "Voir la
+    page complète") — les dupliquer ici serait juste du bruit."""
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 950.0, "positions": {"BTC/USDT": {}}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
+        ],
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert "Positions ouvertes" not in html
+    assert "Positions clôturées" not in html
+    assert "Derniers trades" not in html
+    assert "Journal" not in html
+    assert "$950.00" not in html
 
 
 def test_all_route_never_crashes_even_if_supabase_is_unreachable(monkeypatch):
@@ -690,58 +728,14 @@ def test_all_route_never_crashes_even_if_supabase_is_unreachable(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_fetch_bot_summary_counts_closed_positions_from_sell_trades(monkeypatch):
-    """closed_positions = nombre de ventes réellement exécutées, pas le nombre
-    de trades total (les achats ne clôturent rien)."""
-    _fake_requests_get(monkeypatch, {
-        "tradingbot_state": [{"cash": 900.0, "positions": {"ETH/USDT": {}}, "daily_tripped_today": False, "total_dd_tripped": False}],
-        "tradingbot_trades": [
-            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01, "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
-            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
-            {"symbol": "ETH/USDT", "side": "buy", "reason": "signal", "price": 3000.0, "qty": 0.1, "ts": "2026-09-03T00:00:00Z", "equity_after": 1010.0},
-        ],
-        "tradingbot_journal": [],
-    })
-
-    summary = web_app._fetch_bot_summary("tradingbot")
-
-    assert summary["open_positions"] == 1
-    assert summary["closed_positions"] == 1
-
-
-def test_fetch_bot_summary_builds_equity_points_in_chronological_order(monkeypatch):
-    _fake_requests_get(monkeypatch, {
-        "tradingbot_state": [{"cash": 900.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
-        "tradingbot_trades": [
-            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01, "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
-            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
-        ],
-        "tradingbot_journal": [],
-    })
-
-    summary = web_app._fetch_bot_summary("tradingbot")
-
-    assert summary["equity_points"] == [
-        ("2026-09-01T00:00:00Z", 1000.0),
-        ("2026-09-02T00:00:00Z", 1010.0),
-    ]
-
-
-def test_all_route_shows_closed_position_counts(monkeypatch):
-    _fake_requests_get(monkeypatch, {
-        "tradingbot_state": [{"cash": 950.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
-        "tradingbot_trades": [
-            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01, "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
-            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
-        ],
-        "tradingbot_journal": [],
-        "altbot_state": None, "altbot_trades": None, "altbot_journal": None,
-        "microbot_state": None, "microbot_trades": None, "microbot_journal": None,
-    })
+def test_all_route_has_pull_to_refresh_like_every_bot_s_own_page(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
 
     html = web_app.app.test_client().get("/all").get_data(as_text=True)
 
-    assert "Positions clôturées" in html
+    assert 'id="pull-indicator"' in html
+    assert "touchstart" in html and "touchend" in html
 
 
 # --------------------------------------------------------------------
