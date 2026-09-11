@@ -23,6 +23,17 @@
 #     diversification maintenant qu'une partie des slots peut servir au
 #     rachat plutôt qu'à une nouvelle paire — voir max_concurrent_positions
 #     plus bas, relevé en conséquence.
+#
+# v3 (11/09/2026) — panier étendu aux 6 paires des bots #1/#2 (BTC, ETH,
+# SOL, BNB, XRP, LINK), qui rejoint le panier v2 pour un total de 24 :
+# CHANGEMENT DE BUT ASSUMÉ. Ce bot n'essaie plus d'éviter toute
+# duplication d'exposition avec les bots #1/#2 — il devient un
+# observatoire large : apprendre comment le marché se comporte sur
+# l'ensemble des cryptos suivies par les 3 bots, avec le même moteur de
+# stratégie, avant d'affiner (des règles plus spécifiques par paire,
+# viendront plus tard si ça se justifie). La duplication de capital
+# virtuel entre bots n'est pas un problème ici : rien n'est réel.
+#
 # Toujours une expérience de diversification/comportement, pas une façon
 # d'augmenter les gains — voir ATTENTES.md pour l'avertissement sur ce que
 # le faible drawdown de ce bot NE prouve PAS.
@@ -66,11 +77,18 @@ exchange:
 # seul actif (voir README, section "Portefeuille").
 # ---------------------------------------------------------------
 portfolio:
-  # 18 paires, DISTINCTES des paniers des bots #1 (BTC/ETH/SOL) et #2
-  # (BNB/XRP/LINK) — jamais dupliquer une même exposition sur les 3 bots.
-  # Choisies parmi les cryptos les plus liquides sur OKX avec un
-  # historique bien au-delà d'un an (voir backtest.since_days).
+  # 24 paires (v3, voir en-tête) : les 18 du panier v2 (liquides sur OKX,
+  # au départ choisies pour ne pas dupliquer les bots #1/#2) + les 6
+  # paires DES bots #1 (BTC/ETH/SOL) et #2 (BNB/XRP/LINK) — ce bot couvre
+  # désormais TOUT ce que les 3 bots suivent, pour observer comment le
+  # marché se comporte sur l'ensemble plutôt que sur un sous-ensemble.
   symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - BNB/USDT
+    - XRP/USDT
+    - LINK/USDT
     - ADA/USDT
     - DOGE/USDT
     - AVAX/USDT
@@ -89,13 +107,13 @@ portfolio:
     - ARB/USDT
     - OP/USDT
     - SUI/USDT
-  # Relevé de 10 à 25 avec le passage au rachat (v2, voir en-tête) : sans
-  # ça, chaque position gardée sur une paire pour un rachat (jusqu'à 3,
-  # voir max_positions_per_symbol) mangerait un slot qui, avant, servait
-  # à diversifier sur une paire supplémentaire — brider les deux en même
-  # temps aurait vidé soit le rachat, soit la diversification de son sens.
-  # Toujours PAS le plafond qui protège le capital : c'est
-  # max_position_notional_usd (10 USDT/position) plus bas.
+  # Relevé à 25 en v2 (10 paires -> 18, avec rachat) ; laissé tel quel en
+  # v3 malgré les 6 paires de plus, puisqu'il reste déjà la contrainte la
+  # plus stricte sur le nombre de positions ouvertes en même temps — le
+  # revoir seulement si le walk-forward montrait qu'il bride trop souvent
+  # l'entrée de nouveaux signaux (voir la colonne "entrées bloquées" du
+  # résultat de validation). Toujours PAS le plafond qui protège le
+  # capital : c'est max_position_notional_usd (10 USDT/position) plus bas.
   max_concurrent_positions: 25
   # Combien de positions SIMULTANÉES une même paire peut porter à la fois.
   # 1 (comportement historique, bots #1/#2) = jamais de rachat tant qu'une

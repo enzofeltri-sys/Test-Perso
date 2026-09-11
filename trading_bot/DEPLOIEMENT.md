@@ -583,6 +583,15 @@ automatiquement au premier `/tick` suivant (voir `_normalize_positions`
 dans `web_app.py`), rien à faire manuellement. Voir `ATTENTES.md` pour les
 chiffres figés avant ce déploiement.
 
+**v3 (11/09/2026, même jour) — panier étendu aux paires des bots #1/#2.**
+Le but change : ce bot n'essaie plus d'éviter toute duplication
+d'exposition avec les bots #1/#2, il devient un observatoire large sur
+TOUTES les cryptos suivies par les 3 bots (BTC/ETH/SOL + BNB/XRP/LINK +
+les 18 du panier v2 = 24 paires), pour apprendre comment le marché se
+comporte dans son ensemble avant d'affiner plus tard. `max_concurrent_
+positions` reste à 25 (déjà la contrainte la plus stricte). Toujours
+aucune migration SQL. Voir `ATTENTES.md` pour les chiffres figés.
+
 ### Étape 1 — les tables du bot #3
 
 Même schéma que les sections précédentes, préfixe `microbot_` :

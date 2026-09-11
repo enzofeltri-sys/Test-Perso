@@ -774,7 +774,7 @@ def _fmt_ts(ts_str):
 BOT_REGISTRY = [
     {"prefix": "tradingbot", "label": "Bot #1 — BTC/ETH/SOL", "url": "https://test-perso.onrender.com"},
     {"prefix": "altbot", "label": "Bot #2 — BNB/XRP/LINK", "url": "https://trading-bot-altcoins.onrender.com"},
-    {"prefix": "microbot", "label": "Bot #3 — 18 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com"},
+    {"prefix": "microbot", "label": "Bot #3 — 24 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com"},
 ]
 
 
