@@ -589,3 +589,102 @@ def test_tick_response_exposes_total_exposure(monkeypatch):
         else:
             assert result["exposure_pct"] == pytest.approx(0.0, abs=1e-9)
     assert seen_invested, "le scénario doit ouvrir au moins une position"
+
+
+# --------------------------------------------------------------------
+# /all — vue combinée en lecture seule des 3 bots
+# --------------------------------------------------------------------
+
+def _fake_requests_get(monkeypatch, tables):
+    """tables: {table_name: rows_or_None (None = simule une table absente)}."""
+    monkeypatch.setenv("SUPABASE_URL", "https://exemple.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "cle-factice")
+    calls = []
+
+    class _Resp:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def raise_for_status(self):
+            if self._rows is None:
+                raise RuntimeError("relation does not exist")
+
+        def json(self):
+            return self._rows
+
+    def _get(url, headers=None, params=None, timeout=None):
+        table = url.rsplit("/", 1)[-1]
+        calls.append(table)
+        return _Resp(tables.get(table))
+
+    monkeypatch.setattr(web_app.requests, "get", _get)
+    return calls
+
+
+def test_fetch_bot_summary_reads_the_given_prefix_only(monkeypatch):
+    calls = _fake_requests_get(monkeypatch, {
+        "altbot_state": [{"cash": 850.0, "positions": {"BNB/USDT": {}}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "altbot_trades": [{"symbol": "BNB/USDT", "side": "buy", "reason": "signal", "price": 600.0, "qty": 0.01, "ts": "2026-09-11T07:00:00Z"}],
+        "altbot_journal": [{"ts": "2026-09-11T07:00:00Z", "author": "bot", "message": "Achat BNB/USDT"}],
+    })
+
+    summary = web_app._fetch_bot_summary("altbot")
+
+    assert calls == ["altbot_state", "altbot_trades", "altbot_journal"]
+    assert summary["found"] is True
+    assert summary["healthy"] is True
+    assert summary["cash"] == 850.0
+    assert summary["open_positions"] == 1
+    assert summary["trades"][0]["symbol"] == "BNB/USDT"
+    assert summary["journal"][0]["message"] == "Achat BNB/USDT"
+
+
+def test_fetch_bot_summary_degrades_gracefully_when_table_is_missing(monkeypatch):
+    """Un bot pas encore migré ne doit jamais faire planter la vue combinée
+    pour les bots qui, eux, existent déjà."""
+    _fake_requests_get(monkeypatch, {"microbot_state": None, "microbot_trades": None, "microbot_journal": None})
+
+    summary = web_app._fetch_bot_summary("microbot")
+
+    assert summary["found"] is False
+    assert summary["trades"] == [] and summary["journal"] == []
+
+
+def test_fetch_bot_summary_flags_total_drawdown_as_unhealthy(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 500.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": True}],
+        "tradingbot_trades": [], "tradingbot_journal": [],
+    })
+
+    summary = web_app._fetch_bot_summary("tradingbot")
+
+    assert summary["healthy"] is False
+    assert summary["total_dd_tripped"] is True
+
+
+def test_all_route_shows_every_bot_even_when_one_has_no_data(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 950.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [], "tradingbot_journal": [],
+        "altbot_state": [{"cash": 900.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "altbot_trades": [], "altbot_journal": [],
+        "microbot_state": None, "microbot_trades": None, "microbot_journal": None,
+    })
+
+    client = web_app.app.test_client()
+    resp = client.get("/all")
+    html = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Bot #1" in html and "Bot #2" in html and "Bot #3" in html
+    assert "$950.00" in html and "$900.00" in html
+    assert "Aucune donnée pour l'instant" in html  # bot #3, pas encore migré
+
+
+def test_all_route_never_crashes_even_if_supabase_is_unreachable(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+
+    resp = web_app.app.test_client().get("/all")
+
+    assert resp.status_code == 200

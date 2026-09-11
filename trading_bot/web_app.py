@@ -33,6 +33,7 @@ import traceback
 from datetime import datetime, timezone
 
 import pandas as pd
+import requests
 import yaml
 from flask import Flask, jsonify, render_template_string, request
 
@@ -704,6 +705,174 @@ def _fmt_ts(ts_str):
         return dt.strftime("%d/%m %H:%M UTC")
     except (ValueError, TypeError):
         return ts_str
+
+
+# Les 3 bots connus, tous sur le même projet Supabase (préfixes de table
+# différents) mais des services Render distincts (voir DEPLOIEMENT.md,
+# "Un deuxième bot en parallèle" / "Un troisième bot"). Codé en dur
+# plutôt que découvert dynamiquement : c'est une vue en LECTURE SEULE, qui
+# ne pilote rien — l'ajouter ici ne fait jamais apparaître un bot qui
+# n'existe pas ailleurs, et l'inverse n'est pas dangereux non plus (un
+# bot pas encore migré affiche juste "aucune donnée pour l'instant").
+BOT_REGISTRY = [
+    {"prefix": "tradingbot", "label": "Bot #1 — BTC/ETH/SOL", "url": "https://test-perso.onrender.com"},
+    {"prefix": "altbot", "label": "Bot #2 — BNB/XRP/LINK", "url": "https://trading-bot-altcoins.onrender.com"},
+    {"prefix": "microbot", "label": "Bot #3 — 10 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com"},
+]
+
+
+def _fetch_bot_summary(prefix: str) -> dict:
+    """Lit l'essentiel d'UN bot par son préfixe de table, en lecture seule,
+    directement en REST — jamais via supabase_state (dont TABLE_PREFIX ne
+    vaut que pour le bot de CE processus, pas pour lire les tables d'un
+    AUTRE bot). Best-effort partout : une table pas encore migrée ne doit
+    jamais faire échouer la page pour les bots qui, eux, existent déjà."""
+    def _get(table, params):
+        try:
+            resp = requests.get(f"{db._base_url()}/{prefix}_{table}", headers=db._headers(),
+                                 params=params, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            return None
+
+    state_rows = _get("state", {"id": "eq.default", "select": "*"})
+    state = (state_rows or [{}])[0] if state_rows else {}
+    trades = _get("trades", {"select": "*", "order": "ts.desc", "limit": "5"}) or []
+    journal = _get("journal", {"select": "*", "order": "ts.desc", "limit": "5"}) or []
+
+    positions = (state or {}).get("positions") or {}
+    healthy = state is not None and not (state.get("daily_tripped_today") or state.get("total_dd_tripped"))
+
+    return {
+        "found": state_rows is not None,
+        "healthy": healthy,
+        "total_dd_tripped": bool((state or {}).get("total_dd_tripped")),
+        "cash": (state or {}).get("cash"),
+        "open_positions": len(positions),
+        "trades": [{
+            "symbol": t.get("symbol"), "side": t.get("side"), "reason": t.get("reason"),
+            "price": t.get("price"), "qty": t.get("qty"), "ts": _fmt_ts(t.get("ts")),
+        } for t in trades],
+        "journal": [{
+            "ts": _fmt_ts(j.get("ts")), "author": j.get("author"), "message": j.get("message"),
+        } for j in journal],
+    }
+
+
+ALL_PAGE = """<!doctype html>
+<title>Vue d'ensemble — 3 bots</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
+    --rule:#DBDBD6; --accent:#96622A; --green:#3E7A52; --red:#A3453A; --card:#EBEBE7;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
+      --rule:#333432; --accent:#CB9855; --green:#6FAE87; --red:#D08076; --card:#1F2022;
+    }
+  }
+  *{ box-sizing:border-box; margin:0; }
+  body{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }
+  .wrap{ max-width:640px; margin:0 auto; padding:56px 20px 96px; }
+  .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; }
+  .kicker{ font-family:"IBM Plex Mono", monospace; font-size:0.72rem; letter-spacing:0.14em; text-transform:uppercase; color:var(--text-faint); margin-bottom:10px; }
+  h1{ font-family:"Fraunces", serif; font-weight:500; font-size:1.9rem; margin-bottom:44px; }
+  .bot{ background:var(--card); border-radius:14px; padding:22px 22px 20px; margin-bottom:20px; }
+  .bot-head{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:14px; }
+  .bot-name{ font-weight:500; font-size:1.02rem; }
+  .status-line{ display:flex; align-items:baseline; gap:8px; font-size:0.82rem; color:var(--text-muted); margin-bottom:16px; }
+  .dot{ width:6px; height:6px; border-radius:50%; display:inline-block; }
+  .dot.ok{ background:var(--green); } .dot.bad{ background:var(--red); } .dot.unknown{ background:var(--text-faint); }
+  .stats-row{ display:flex; gap:24px; margin-bottom:16px; flex-wrap:wrap; }
+  .stat .n{ font-size:0.72rem; color:var(--text-muted); margin-bottom:2px; }
+  .stat .v{ font-family:"IBM Plex Mono", monospace; font-variant-numeric:tabular-nums; font-size:0.98rem; }
+  .label{ font-size:0.72rem; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.08em; margin:14px 0 6px; }
+  .row{ padding:8px 0; font-size:0.85rem; }
+  .row + .row{ border-top:1px solid var(--rule); }
+  .row .name{ font-weight:500; }
+  .row .detail{ font-size:0.76rem; color:var(--text-muted); margin-top:1px; }
+  .side{ font-family:"IBM Plex Mono", monospace; font-size:0.72rem; }
+  .side.buy{ color:var(--green); } .side.sell{ color:var(--red); }
+  .empty{ font-size:0.82rem; color:var(--text-faint); }
+  .bot-link{ display:inline-block; margin-top:14px; font-size:0.82rem; color:var(--accent); text-decoration:none; }
+  footer{ margin-top:40px; font-size:0.78rem; color:var(--text-faint); text-align:center; }
+  footer a{ color:inherit; }
+</style>
+
+<div class="wrap">
+  <p class="kicker">Vue d'ensemble</p>
+  <h1>Les 3 bots</h1>
+
+  {% for b in bots %}
+  <div class="bot">
+    <div class="bot-head">
+      <span class="bot-name">{{ b.label }}</span>
+    </div>
+    {% if not b.summary.found %}
+      <p class="empty">Aucune donnée pour l'instant — tables pas encore migrées ou service pas encore déployé.</p>
+    {% else %}
+      <div class="status-line">
+        <span class="dot {{ 'bad' if b.summary.total_dd_tripped else ('ok' if b.summary.healthy else 'bad') }}"></span>
+        {% if b.summary.total_dd_tripped %}
+          <strong>Coupe-circuit total déclenché</strong>
+        {% elif b.summary.healthy %}
+          En ligne
+        {% else %}
+          Coupe-circuit journalier déclenché
+        {% endif %}
+      </div>
+      <div class="stats-row">
+        <div class="stat"><div class="n">Cash</div><div class="v">{{ '$%.2f'|format(b.summary.cash) if b.summary.cash is not none else '—' }}</div></div>
+        <div class="stat"><div class="n">Positions ouvertes</div><div class="v">{{ b.summary.open_positions }}</div></div>
+      </div>
+      <p class="label">Derniers trades</p>
+      {% if b.summary.trades %}
+        {% for t in b.summary.trades %}
+        <div class="row">
+          <div class="name">{{ t.symbol }} <span class="side mono {{ t.side }}">{{ t.side }}</span></div>
+          <div class="detail">{{ t.ts }} · {{ t.reason }} · {{ '%.6f'|format(t.qty) }} @ ${{ '%.2f'|format(t.price) }}</div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="empty">Aucun trade pour l'instant.</p>
+      {% endif %}
+      <p class="label">Journal</p>
+      {% if b.summary.journal %}
+        {% for j in b.summary.journal %}
+        <div class="row">
+          <div class="detail">{{ j.ts }} · {{ j.author }}</div>
+          <div class="name" style="font-weight:400;">{{ j.message }}</div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="empty">Aucune entrée pour l'instant.</p>
+      {% endif %}
+    {% endif %}
+    <a class="bot-link" href="{{ b.url }}">Voir la page complète de {{ b.label.split(' — ')[0] }} →</a>
+  </div>
+  {% endfor %}
+
+  <footer>
+    <p>Lecture seule — ne déclenche aucun cycle. Chaque bot garde son propre <span class="mono">/tick</span> et son propre déploiement, indépendamment de cette page.</p>
+  </footer>
+</div>
+"""
+
+
+@app.route("/all")
+def all_bots():
+    try:
+        bots = [{"label": b["label"], "url": b["url"], "summary": _fetch_bot_summary(b["prefix"])}
+                for b in BOT_REGISTRY]
+        return render_template_string(ALL_PAGE, bots=bots), 200
+    except Exception:
+        return "OK - vue d'ensemble indisponible pour le moment.", 200
 
 
 @app.route("/")
