@@ -19,6 +19,7 @@ def _make_backtester(cfg, min_order_limits=None):
         max_daily_loss_pct=risk_cfg.get("max_daily_loss_pct"),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
         max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
+        max_position_notional_usd=risk_cfg.get("max_position_notional_usd"),
         slippage_pct=bt_cfg.get("slippage_pct", 0.0),
         max_concurrent_positions=pf_cfg["max_concurrent_positions"],
         max_correlation_for_new_position=risk_cfg.get("max_correlation_for_new_position"),

@@ -22,6 +22,7 @@ def _portfolio_kwargs(cfg):
         momentum_lookback=pf_cfg.get("momentum_lookback", 20),
         max_total_drawdown_pct=risk_cfg.get("max_total_drawdown_pct"),
         max_position_pct_of_equity=risk_cfg.get("max_position_pct_of_equity"),
+        max_position_notional_usd=risk_cfg.get("max_position_notional_usd"),
     )
 
 

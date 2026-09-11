@@ -31,7 +31,8 @@ from datetime import datetime
 def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
                    stop_distance: float, available_cash: float,
                    min_amount: float = None, min_cost: float = None,
-                   max_position_pct_of_equity: float = None) -> float:
+                   max_position_pct_of_equity: float = None,
+                   max_position_notional_usd: float = None) -> float:
     """
     Retourne la quantité (en unités de l'actif, ex: BTC) à acheter.
 
@@ -53,6 +54,14 @@ def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
       toute la position qui est exposée. Ce plafond borne ce risque-là,
       et c'est aussi lui qui rend `max_concurrent_positions` réellement
       atteignable (sans lui, la première position consomme tout le cash).
+    - max_position_notional_usd: plafond en MONTANT FIXE (ex: 10 pour
+      "jamais plus de 10 USDT par position"), indépendant de `equity` —
+      contrairement à `max_position_pct_of_equity` qui est une part du
+      capital, celui-ci ne bouge pas quand le capital change. Sert à des
+      expériences de diversification extrême (beaucoup de petites mises
+      identiques sur beaucoup de paires, plutôt qu'un risque proportionnel
+      au capital) — voir config_bot3.yaml. Les deux plafonds peuvent
+      coexister : c'est le plus strict des deux qui s'applique.
     - min_amount / min_cost: quantité et/ou valeur notionnelle minimum
       qu'un ordre doit atteindre sur cet exchange (voir
       data.get_min_order_limits). Si la position calculée par le risque
@@ -76,6 +85,8 @@ def position_size(equity: float, risk_per_trade_pct: float, entry_price: float,
     # être refusée, pas passée à sa taille d'avant plafonnement.
     if max_position_pct_of_equity:
         qty = min(qty, equity * max_position_pct_of_equity / entry_price)
+    if max_position_notional_usd:
+        qty = min(qty, max_position_notional_usd / entry_price)
 
     if qty <= 0:
         return 0.0

@@ -123,3 +123,49 @@ def test_position_size_cap_applies_before_exchange_minimum():
     avec = position_size(equity, 0.01, entry, stop_distance, cash,
                          min_cost=200.0, max_position_pct_of_equity=0.10)
     assert avec == 0.0
+
+
+def test_position_size_caps_at_a_flat_notional_amount():
+    """Le bot #3 plafonne chaque position à un MONTANT FIXE (10 USDT), pas
+    une part du capital — indépendant de equity, contrairement à
+    max_position_pct_of_equity."""
+    equity = cash = 1000.0
+    entry, stop_distance = 100.0, 5.0  # risque 1% -> 2 unites = 200 USDT sans plafond
+
+    sans = position_size(equity, 0.01, entry, stop_distance, cash)
+    assert sans * entry == pytest.approx(200.0)
+
+    avec = position_size(equity, 0.01, entry, stop_distance, cash, max_position_notional_usd=10.0)
+    assert avec * entry == pytest.approx(10.0, rel=1e-6)
+    assert avec < sans
+
+
+def test_position_size_notional_cap_does_not_scale_with_equity():
+    """A la différence de max_position_pct_of_equity, ce plafond reste
+    fixe même si le capital grossit — c'est tout l'intérêt pour une
+    expérience de petites mises identiques sur beaucoup de paires."""
+    entry, stop_distance = 100.0, 5.0
+
+    petit = position_size(1000.0, 0.01, entry, stop_distance, 1000.0, max_position_notional_usd=10.0)
+    grand = position_size(100_000.0, 0.01, entry, stop_distance, 100_000.0, max_position_notional_usd=10.0)
+    assert petit * entry == pytest.approx(10.0, rel=1e-6)
+    assert grand * entry == pytest.approx(10.0, rel=1e-6)
+
+
+def test_position_size_the_two_caps_coexist_stricter_wins():
+    equity = cash = 1000.0
+    entry, stop_distance = 100.0, 1.0  # risque veut 10 unites = 1000 USDT
+
+    # plafond % (25% = 250 USDT) moins strict que le plafond fixe (10 USDT)
+    qty = position_size(equity, 0.01, entry, stop_distance, cash,
+                         max_position_pct_of_equity=0.25, max_position_notional_usd=10.0)
+    assert qty * entry == pytest.approx(10.0, rel=1e-6)
+
+
+def test_position_size_notional_cap_applies_before_exchange_minimum():
+    equity = cash = 1000.0
+    entry, stop_distance = 100.0, 1.0
+
+    avec = position_size(equity, 0.01, entry, stop_distance, cash,
+                          min_cost=20.0, max_position_notional_usd=10.0)
+    assert avec == 0.0, "10 USDT plafonnés < minimum d'ordre 20 USDT -> refusé, pas arrondi"
