@@ -28,9 +28,10 @@ d'environnement requises : voir supabase_state.py et render.yaml.
 
 import hmac
 import json
+import math
 import os
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
@@ -726,7 +727,13 @@ def _fetch_bot_summary(prefix: str) -> dict:
     directement en REST — jamais via supabase_state (dont TABLE_PREFIX ne
     vaut que pour le bot de CE processus, pas pour lire les tables d'un
     AUTRE bot). Best-effort partout : une table pas encore migrée ne doit
-    jamais faire échouer la page pour les bots qui, eux, existent déjà."""
+    jamais faire échouer la page pour les bots qui, eux, existent déjà.
+
+    Un seul appel `trades` (croissant, jusqu'à 500) sert trois besoins à la
+    fois : les derniers trades affichés (on en reprend la queue), le compte
+    des positions clôturées (les ventes), et la courbe d'équité du
+    graphique — sur les volumes réels de ce projet (dizaines de trades par
+    mois), 500 couvre largement plusieurs mois d'historique en une requête."""
     def _get(table, params):
         try:
             resp = requests.get(f"{db._base_url()}/{prefix}_{table}", headers=db._headers(),
@@ -738,11 +745,12 @@ def _fetch_bot_summary(prefix: str) -> dict:
 
     state_rows = _get("state", {"id": "eq.default", "select": "*"})
     state = (state_rows or [{}])[0] if state_rows else {}
-    trades = _get("trades", {"select": "*", "order": "ts.desc", "limit": "5"}) or []
+    trades_asc = _get("trades", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
     journal = _get("journal", {"select": "*", "order": "ts.desc", "limit": "5"}) or []
 
     positions = (state or {}).get("positions") or {}
     healthy = state is not None and not (state.get("daily_tripped_today") or state.get("total_dd_tripped"))
+    recent_trades = list(reversed(trades_asc))[:5]
 
     return {
         "found": state_rows is not None,
@@ -750,14 +758,144 @@ def _fetch_bot_summary(prefix: str) -> dict:
         "total_dd_tripped": bool((state or {}).get("total_dd_tripped")),
         "cash": (state or {}).get("cash"),
         "open_positions": len(positions),
+        "closed_positions": sum(1 for t in trades_asc if t.get("side") == "sell"),
         "trades": [{
             "symbol": t.get("symbol"), "side": t.get("side"), "reason": t.get("reason"),
             "price": t.get("price"), "qty": t.get("qty"), "ts": _fmt_ts(t.get("ts")),
-        } for t in trades],
+        } for t in recent_trades],
         "journal": [{
             "ts": _fmt_ts(j.get("ts")), "author": j.get("author"), "message": j.get("message"),
         } for j in journal],
+        # (ts brut, equity_after) — matière première du graphique, jamais
+        # affiché directement ; on garde le ts ISO ici, l'analyse (parsing,
+        # échelle) est isolée dans _build_equity_chart_svg pour rester testable.
+        "equity_points": [(t["ts"], t["equity_after"]) for t in trades_asc
+                           if t.get("ts") and t.get("equity_after") is not None],
     }
+
+
+def _parse_ts(ts_str):
+    return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+
+def _nice_step(raw_step: float) -> float:
+    """Arrondit un pas d'axe au "nombre rond" juste au-dessus (1/2/5 * 10^n)
+    — évite des graduations comme 733,4 $ sur l'axe Y. Marche aussi pour de
+    tout petits écarts (le bot #3 plafonne chaque position à 10$ : son
+    équity peut à peine bouger d'une fenêtre à l'autre)."""
+    if raw_step <= 0:
+        return 1.0
+    magnitude = 10 ** math.floor(math.log10(raw_step))
+    for mult in (1, 2, 5, 10):
+        step = mult * magnitude
+        if step >= raw_step:
+            return step
+    return 10 * magnitude
+
+
+def _build_equity_chart_svg(series: list) -> str:
+    """series: [{"label": str, "color_var": "--series-1", "points": [(datetime, float), ...]}],
+    points DÉJÀ triés croissants par date. Rend un graphique ligne SVG
+    autonome (aucun JS, aucune dépendance externe) — un point par trade
+    réellement exécuté (pas une courbe continue : personne ne connaît la
+    valeur du portefeuille ENTRE deux trades, ce serait inventer des
+    données). Retourne "" si aucune série n'a au moins un point.
+
+    Charte couleurs/formes : palette catégorielle validée (3 premiers
+    slots, voir dataviz), lignes 2px, points de fin >=8px avec anneau de
+    séparation, étiquettes directes en fin de ligne, jamais la couleur de
+    la série sur le texte (charte "marks-and-anatomy")."""
+    active = [s for s in series if s["points"]]
+    if not active:
+        return ""
+
+    W, H = 640, 240
+    # marge gauche : graduations $ ; marge droite : réservée aux étiquettes
+    # de fin de ligne — les deux ne doivent JAMAIS partager le même côté,
+    # sinon un point qui finit près d'une graduation ronde les superpose.
+    PAD_L, PAD_R, PAD_T, PAD_B = 46, 128, 16, 30
+
+    all_points = [p for s in active for p in s["points"]]
+    t_min = min(p[0] for p in all_points)
+    t_max = max(p[0] for p in all_points)
+    if t_max == t_min:
+        t_max = t_min + timedelta(hours=1)
+
+    values = [p[1] for p in all_points] + [1000.0]  # 1000 = capital de départ, toujours dans le cadre
+    v_min, v_max = min(values), max(values)
+    v_range = max(v_max - v_min, 1.0)
+    v_pad = v_range * 0.12
+    v_min, v_max = v_min - v_pad, v_max + v_pad
+
+    def x_of(t):
+        frac = (t - t_min).total_seconds() / (t_max - t_min).total_seconds()
+        return PAD_L + frac * (W - PAD_L - PAD_R)
+
+    def y_of(v):
+        frac = (v - v_min) / (v_max - v_min)
+        return H - PAD_B - frac * (H - PAD_T - PAD_B)
+
+    parts = [f'<svg viewBox="0 0 {W} {H}" width="100%" role="img" '
+             f'aria-label="Évolution du capital des {len(active)} bot(s) au fil des trades">']
+
+    # ligne de référence : le capital de départ commun aux 3 bots (1000$).
+    # Pas d'étiquette texte inline ici (superposition avec les courbes qui
+    # démarrent toutes près de cette ligne) — le sens de la ligne est
+    # expliqué dans la légende de la carte (chart-sub).
+    ref_y = y_of(1000.0)
+    parts.append(f'<line x1="{PAD_L}" y1="{ref_y:.1f}" x2="{W - PAD_R}" y2="{ref_y:.1f}" '
+                 f'stroke="var(--rule)" stroke-width="1"/>')
+
+    # graduations Y (nombres ronds) — à gauche, jamais du même côté que les
+    # étiquettes directes de fin de ligne (à droite), sinon collision quand
+    # une série finit près d'une valeur ronde.
+    tick_step = _nice_step((v_max - v_min) / 4)
+    tick = tick_step * round(v_min / tick_step)
+    while tick <= v_max:
+        if tick > v_min:
+            y = y_of(tick)
+            parts.append(f'<line x1="{PAD_L}" y1="{y:.1f}" x2="{W - PAD_R}" y2="{y:.1f}" '
+                         f'stroke="var(--rule)" stroke-width="1" opacity="0.5"/>')
+            parts.append(f'<text x="{PAD_L - 6:.1f}" y="{y + 3:.1f}" font-size="9" fill="var(--text-faint)" '
+                         f'text-anchor="end" font-family="IBM Plex Mono, monospace">${tick:,.0f}</text>')
+        tick += tick_step
+
+    # repères de date (début / milieu / fin)
+    for frac, anchor in ((0.0, "start"), (0.5, "middle"), (1.0, "end")):
+        t = t_min + (t_max - t_min) * frac
+        x = x_of(t)
+        parts.append(f'<text x="{x:.1f}" y="{H - 8}" font-size="9" fill="var(--text-faint)" '
+                     f'text-anchor="{anchor}" font-family="IBM Plex Mono, monospace">{t.strftime("%d/%m")}</text>')
+
+    # une ligne par bot + point de fin étiqueté — labels positionnés avec un
+    # écart minimum pour ne jamais se chevaucher quand deux bots finissent
+    # à une valeur proche (voir dataviz: "quand les fins convergent...")
+    end_labels = []
+    for s in active:
+        pts = s["points"]
+        poly = " ".join(f"{x_of(t):.1f},{y_of(v):.1f}" for t, v in pts)
+        parts.append(f'<polyline points="{poly}" fill="none" stroke="var({s["color_var"]})" '
+                     f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+        last_t, last_v = pts[-1]
+        lx, ly = x_of(last_t), y_of(last_v)
+        # anneau de séparation (surface) puis point plein (couleur de série)
+        parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="7" fill="var(--card)"/>')
+        parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var({s["color_var"]})">'
+                     f'<title>{s["label"]} : ${last_v:,.2f} au {last_t.strftime("%d/%m %H:%M")} UTC</title></circle>')
+        end_labels.append({"y": ly, "text": f'{s["label"]} · ${last_v:,.0f}', "color_var": s["color_var"]})
+
+    end_labels.sort(key=lambda e: e["y"])
+    MIN_GAP = 14
+    for i in range(1, len(end_labels)):
+        if end_labels[i]["y"] - end_labels[i - 1]["y"] < MIN_GAP:
+            end_labels[i]["y"] = end_labels[i - 1]["y"] + MIN_GAP
+    for e in end_labels:
+        parts.append(f'<circle cx="{W - PAD_R + 10}" cy="{e["y"] - 3:.1f}" r="3.5" fill="var({e["color_var"]})"/>')
+        parts.append(f'<text x="{W - PAD_R + 18}" y="{e["y"]:.1f}" font-size="10.5" fill="var(--text)" '
+                     f'font-family="IBM Plex Sans, sans-serif">{e["text"]}</text>')
+
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 ALL_PAGE = """<!doctype html>
@@ -770,12 +908,22 @@ ALL_PAGE = """<!doctype html>
   :root{
     --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
     --rule:#DBDBD6; --accent:#96622A; --green:#3E7A52; --red:#A3453A; --card:#EBEBE7;
+    /* palette catégorielle validée (dataviz skill) — 3 premiers slots,
+       les seuls qui passent le contrôle CVD/contraste toutes paires
+       confondues en clair ET en sombre : bleu / orange / aqua */
+    --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
       --rule:#333432; --accent:#CB9855; --green:#6FAE87; --red:#D08076; --card:#1F2022;
+      --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
     }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
+    --rule:#333432; --accent:#CB9855; --green:#6FAE87; --red:#D08076; --card:#1F2022;
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
   }
   *{ box-sizing:border-box; margin:0; }
   body{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }
@@ -800,7 +948,17 @@ ALL_PAGE = """<!doctype html>
   .side{ font-family:"IBM Plex Mono", monospace; font-size:0.72rem; }
   .side.buy{ color:var(--green); } .side.sell{ color:var(--red); }
   .empty{ font-size:0.82rem; color:var(--text-faint); }
-  .bot-link{ display:inline-block; margin-top:14px; font-size:0.82rem; color:var(--accent); text-decoration:none; }
+  .bot-link{
+    display:inline-flex; align-items:center; gap:6px; margin-top:16px;
+    padding:9px 14px; border-radius:9px; background:var(--bg);
+    font-size:0.82rem; font-weight:500; color:var(--accent); text-decoration:none;
+  }
+  .chart-card{ background:var(--card); border-radius:14px; padding:22px; margin-bottom:24px; }
+  .chart-card h2{ font-size:0.95rem; font-weight:500; margin-bottom:4px; }
+  .chart-sub{ font-size:0.78rem; color:var(--text-muted); margin-bottom:16px; }
+  .legend{ display:flex; gap:18px; flex-wrap:wrap; margin-bottom:14px; }
+  .legend-item{ display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--text-muted); }
+  .legend-dot{ width:9px; height:9px; border-radius:50%; display:inline-block; flex-shrink:0; }
   footer{ margin-top:40px; font-size:0.78rem; color:var(--text-faint); text-align:center; }
   footer a{ color:inherit; }
 </style>
@@ -809,10 +967,25 @@ ALL_PAGE = """<!doctype html>
   <p class="kicker">Vue d'ensemble</p>
   <h1>Les 3 bots</h1>
 
+  <div class="chart-card">
+    <h2>Évolution du capital</h2>
+    <p class="chart-sub">Un point par trade réellement exécuté — pas une estimation entre deux trades. La ligne fine horizontale marque les 1000$ de départ commun aux 3 bots.</p>
+    {% if chart_svg %}
+      <div class="legend">
+        {% for b in bots %}
+        <span class="legend-item"><span class="legend-dot" style="background:var({{ b.color_var }})"></span>{{ b.label.split(' — ')[0] }}</span>
+        {% endfor %}
+      </div>
+      {{ chart_svg|safe }}
+    {% else %}
+      <p class="empty">Aucun trade sur aucun bot pour l'instant — le graphique apparaîtra dès le premier.</p>
+    {% endif %}
+  </div>
+
   {% for b in bots %}
   <div class="bot">
     <div class="bot-head">
-      <span class="bot-name">{{ b.label }}</span>
+      <span class="bot-name"><span class="legend-dot" style="background:var({{ b.color_var }})"></span> {{ b.label }}</span>
     </div>
     {% if not b.summary.found %}
       <p class="empty">Aucune donnée pour l'instant — tables pas encore migrées ou service pas encore déployé.</p>
@@ -830,6 +1003,7 @@ ALL_PAGE = """<!doctype html>
       <div class="stats-row">
         <div class="stat"><div class="n">Cash</div><div class="v">{{ '$%.2f'|format(b.summary.cash) if b.summary.cash is not none else '—' }}</div></div>
         <div class="stat"><div class="n">Positions ouvertes</div><div class="v">{{ b.summary.open_positions }}</div></div>
+        <div class="stat"><div class="n">Positions clôturées</div><div class="v">{{ b.summary.closed_positions }}</div></div>
       </div>
       <p class="label">Derniers trades</p>
       {% if b.summary.trades %}
@@ -868,9 +1042,23 @@ ALL_PAGE = """<!doctype html>
 @app.route("/all")
 def all_bots():
     try:
-        bots = [{"label": b["label"], "url": b["url"], "summary": _fetch_bot_summary(b["prefix"])}
-                for b in BOT_REGISTRY]
-        return render_template_string(ALL_PAGE, bots=bots), 200
+        color_vars = ["--series-1", "--series-2", "--series-3"]
+        bots = []
+        chart_series = []
+        for b, color_var in zip(BOT_REGISTRY, color_vars):
+            summary = _fetch_bot_summary(b["prefix"])
+            bots.append({"label": b["label"], "url": b["url"], "summary": summary, "color_var": color_var})
+            points = []
+            for ts_raw, equity in summary["equity_points"]:
+                try:
+                    points.append((_parse_ts(ts_raw), float(equity)))
+                except (ValueError, TypeError):
+                    continue  # une ligne mal formée ne doit pas casser tout le graphique
+            if points:
+                chart_series.append({"label": b["label"].split(" — ")[0], "color_var": color_var, "points": points})
+
+        chart_svg = _build_equity_chart_svg(chart_series)
+        return render_template_string(ALL_PAGE, bots=bots, chart_svg=chart_svg), 200
     except Exception:
         return "OK - vue d'ensemble indisponible pour le moment.", 200
 

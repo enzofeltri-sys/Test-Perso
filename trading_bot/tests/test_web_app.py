@@ -688,3 +688,116 @@ def test_all_route_never_crashes_even_if_supabase_is_unreachable(monkeypatch):
     resp = web_app.app.test_client().get("/all")
 
     assert resp.status_code == 200
+
+
+def test_fetch_bot_summary_counts_closed_positions_from_sell_trades(monkeypatch):
+    """closed_positions = nombre de ventes réellement exécutées, pas le nombre
+    de trades total (les achats ne clôturent rien)."""
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 900.0, "positions": {"ETH/USDT": {}}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01, "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
+            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
+            {"symbol": "ETH/USDT", "side": "buy", "reason": "signal", "price": 3000.0, "qty": 0.1, "ts": "2026-09-03T00:00:00Z", "equity_after": 1010.0},
+        ],
+        "tradingbot_journal": [],
+    })
+
+    summary = web_app._fetch_bot_summary("tradingbot")
+
+    assert summary["open_positions"] == 1
+    assert summary["closed_positions"] == 1
+
+
+def test_fetch_bot_summary_builds_equity_points_in_chronological_order(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 900.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01, "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
+            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
+        ],
+        "tradingbot_journal": [],
+    })
+
+    summary = web_app._fetch_bot_summary("tradingbot")
+
+    assert summary["equity_points"] == [
+        ("2026-09-01T00:00:00Z", 1000.0),
+        ("2026-09-02T00:00:00Z", 1010.0),
+    ]
+
+
+def test_all_route_shows_closed_position_counts(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 950.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01, "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
+            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01, "ts": "2026-09-02T00:00:00Z", "equity_after": 1010.0},
+        ],
+        "tradingbot_journal": [],
+        "altbot_state": None, "altbot_trades": None, "altbot_journal": None,
+        "microbot_state": None, "microbot_trades": None, "microbot_journal": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert "Positions clôturées" in html
+
+
+# --------------------------------------------------------------------
+# _nice_step / _build_equity_chart_svg — géométrie du graphique combiné
+# --------------------------------------------------------------------
+
+def test_nice_step_rounds_up_to_a_clean_number():
+    assert web_app._nice_step(0) == 1.0
+    assert web_app._nice_step(3) == 5.0
+    assert web_app._nice_step(12) == 20.0
+    assert web_app._nice_step(430) == 500.0
+    assert web_app._nice_step(0.03) == pytest.approx(0.05)
+
+
+def test_build_equity_chart_svg_returns_empty_string_when_no_points():
+    assert web_app._build_equity_chart_svg([{"label": "Bot #1", "color_var": "--series-1", "points": []}]) == ""
+    assert web_app._build_equity_chart_svg([]) == ""
+
+
+def test_build_equity_chart_svg_skips_series_without_points_but_keeps_others():
+    points = [(datetime(2026, 9, 1, tzinfo=timezone.utc), 1000.0),
+              (datetime(2026, 9, 2, tzinfo=timezone.utc), 1050.0)]
+    svg = web_app._build_equity_chart_svg([
+        {"label": "Bot #1", "color_var": "--series-1", "points": points},
+        {"label": "Bot #3", "color_var": "--series-3", "points": []},
+    ])
+
+    assert "Bot #1" in svg
+    assert "Bot #3" not in svg
+    assert svg.startswith("<svg")
+
+
+def test_build_equity_chart_svg_never_puts_y_tick_labels_on_the_right(monkeypatch):
+    """Régression : les graduations Y doivent rester à gauche pour ne jamais
+    chevaucher les étiquettes directes de fin de ligne, placées à droite."""
+    points = [(datetime(2026, 9, 1, tzinfo=timezone.utc), 1000.0),
+              (datetime(2026, 9, 2, tzinfo=timezone.utc), 1230.0)]
+    svg = web_app._build_equity_chart_svg([{"label": "Bot #1", "color_var": "--series-1", "points": points}])
+
+    assert 'text-anchor="end"' in svg  # les ticks $ sont ancrés à droite de leur texte, côté gauche du graphique
+    assert "départ" not in svg  # plus d'étiquette inline superposée aux courbes
+
+
+def test_build_equity_chart_svg_separates_colliding_end_labels():
+    """Deux séries qui finissent à des valeurs très proches ne doivent pas
+    produire des étiquettes qui se chevauchent verticalement."""
+    pts_a = [(datetime(2026, 9, 1, tzinfo=timezone.utc), 1000.0),
+             (datetime(2026, 9, 2, tzinfo=timezone.utc), 1001.0)]
+    pts_b = [(datetime(2026, 9, 1, tzinfo=timezone.utc), 1000.0),
+             (datetime(2026, 9, 2, tzinfo=timezone.utc), 1000.5)]
+    svg = web_app._build_equity_chart_svg([
+        {"label": "Bot #1", "color_var": "--series-1", "points": pts_a},
+        {"label": "Bot #3", "color_var": "--series-3", "points": pts_b},
+    ])
+
+    import re
+    ys = [float(m) for m in re.findall(r'<text x="[\d.]+" y="([\d.]+)" font-size="10.5"', svg)]
+    assert len(ys) == 2
+    assert abs(ys[0] - ys[1]) >= 14
