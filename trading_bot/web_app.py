@@ -1032,8 +1032,33 @@ ALL_PAGE = """<!doctype html>
     background:transparent; color:var(--text-muted); cursor:pointer;
   }
   .range-tab.active{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  .expand-btn{
+    display:inline-flex; align-items:center; gap:6px; margin-top:14px;
+    font-family:"IBM Plex Sans", sans-serif; font-size:0.78rem; font-weight:500;
+    color:var(--accent); background:none; border:none; padding:0; cursor:pointer;
+  }
   footer{ margin-top:40px; font-size:0.78rem; color:var(--text-faint); text-align:center; }
   footer a{ color:inherit; }
+
+  .chart-lightbox{
+    position:fixed; inset:0; z-index:100; background:var(--bg);
+    display:flex; flex-direction:column; align-items:center;
+    padding:64px 20px 24px; overflow-y:auto;
+  }
+  .chart-lightbox[hidden]{ display:none; }
+  .chart-lightbox #chart-body{ width:100%; max-width:900px; }
+  .lightbox-close{
+    position:absolute; top:16px; right:16px; width:36px; height:36px;
+    border-radius:50%; border:1px solid var(--rule); background:var(--card);
+    color:var(--text); font-size:0.95rem; line-height:1; cursor:pointer;
+  }
+  .lightbox-hint{
+    font-size:0.78rem; color:var(--text-faint); margin-bottom:16px; text-align:center;
+  }
+  @media (orientation: landscape){
+    .chart-lightbox #chart-body{ max-width:1100px; }
+    .lightbox-hint{ display:none; }
+  }
 
   #pull-indicator{
     position:fixed; top:0; left:0; right:0; z-index:10;
@@ -1058,25 +1083,28 @@ ALL_PAGE = """<!doctype html>
     <h2>Évolution du capital</h2>
     <p class="chart-sub">Un point par trade réellement exécuté — pas une estimation entre deux trades. La ligne fine horizontale marque les 1000$ de départ commun aux 3 bots.</p>
     {% if has_any_data %}
-      <div class="legend">
-        {% for b in bots %}
-        <span class="legend-item"><span class="legend-dot" style="background:var({{ b.color_var }})"></span>{{ b.label.split(' — ')[0] }}</span>
-        {% endfor %}
-      </div>
-      <div class="range-tabs" role="tablist">
+      <div id="chart-body">
+        <div class="legend">
+          {% for b in bots %}
+          <span class="legend-item"><span class="legend-dot" style="background:var({{ b.color_var }})"></span>{{ b.label.split(' — ')[0] }}</span>
+          {% endfor %}
+        </div>
+        <div class="range-tabs" role="tablist">
+          {% for c in charts %}
+          <button type="button" class="range-tab{{ ' active' if c.key == default_range else '' }}" data-range="{{ c.key }}" role="tab" aria-selected="{{ 'true' if c.key == default_range else 'false' }}">{{ c.label }}</button>
+          {% endfor %}
+        </div>
         {% for c in charts %}
-        <button type="button" class="range-tab{{ ' active' if c.key == default_range else '' }}" data-range="{{ c.key }}" role="tab" aria-selected="{{ 'true' if c.key == default_range else 'false' }}">{{ c.label }}</button>
+        <div class="range-panel" data-range="{{ c.key }}" role="tabpanel" {{ '' if c.key == default_range else 'hidden' }}>
+          {% if c.svg %}
+            {{ c.svg|safe }}
+          {% else %}
+            <p class="empty">Aucun trade sur cette période.</p>
+          {% endif %}
+        </div>
         {% endfor %}
       </div>
-      {% for c in charts %}
-      <div class="range-panel" data-range="{{ c.key }}" role="tabpanel" {{ '' if c.key == default_range else 'hidden' }}>
-        {% if c.svg %}
-          {{ c.svg|safe }}
-        {% else %}
-          <p class="empty">Aucun trade sur cette période.</p>
-        {% endif %}
-      </div>
-      {% endfor %}
+      <button type="button" class="expand-btn" id="expand-chart">⤢ Agrandir</button>
     {% else %}
       <p class="empty">Aucun trade sur aucun bot pour l'instant — le graphique apparaîtra dès le premier.</p>
     {% endif %}
@@ -1117,6 +1145,12 @@ ALL_PAGE = """<!doctype html>
     <p>Lecture seule — ne déclenche aucun cycle. Chaque bot garde son propre <span class="mono">/tick</span> et son propre déploiement, indépendamment de cette page.</p>
     <p>Tire vers le bas en haut de la page pour rafraîchir.</p>
   </footer>
+</div>
+
+<div class="chart-lightbox" id="chart-lightbox" hidden>
+  <button type="button" class="lightbox-close" id="close-chart" aria-label="Fermer">✕</button>
+  <p class="lightbox-hint">Tourne ton téléphone pour une vue plus large.</p>
+  <div id="chart-lightbox-slot"></div>
 </div>
 
 <script>
@@ -1178,6 +1212,37 @@ document.querySelectorAll(".range-tab").forEach(function (btn) {
     if (panel) panel.hidden = false;
   });
 });
+
+// Agrandir le graphique : déplace le bloc #chart-body (légende + onglets +
+// graphiques déjà rendus, jamais recalculés) dans une vue plein écran, sans
+// dupliquer le DOM — donc les boutons d'onglet gardent leurs écouteurs et
+// l'onglet actif reste synchronisé entre les deux vues.
+(function () {
+  var expandBtn = document.getElementById("expand-chart");
+  var lightbox = document.getElementById("chart-lightbox");
+  if (!expandBtn || !lightbox) return;
+  var closeBtn = document.getElementById("close-chart");
+  var slot = document.getElementById("chart-lightbox-slot");
+  var body = document.getElementById("chart-body");
+  var bodyHome = body.parentNode;
+  var bodyNextSibling = body.nextSibling;
+
+  function openLightbox() {
+    slot.appendChild(body);
+    lightbox.hidden = false;
+    document.body.style.overflow = "hidden";
+  }
+  function closeLightbox() {
+    bodyHome.insertBefore(body, bodyNextSibling);
+    lightbox.hidden = true;
+    document.body.style.overflow = "";
+  }
+  expandBtn.addEventListener("click", openLightbox);
+  closeBtn.addEventListener("click", closeLightbox);
+  lightbox.addEventListener("click", function (e) {
+    if (e.target === lightbox) closeLightbox();  // clic en dehors du contenu
+  });
+})();
 </script>
 """
 

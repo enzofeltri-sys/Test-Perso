@@ -995,6 +995,41 @@ def test_all_route_has_pull_to_refresh_like_every_bot_s_own_page(monkeypatch):
     assert "touchstart" in html and "touchend" in html
 
 
+def test_all_route_has_an_expand_button_and_lightbox_when_chart_has_data(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 1000.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01,
+             "ts": "2026-09-01T00:00:00Z", "equity_after": 1000.0},
+        ],
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert 'id="expand-chart"' in html
+    assert 'id="chart-lightbox"' in html
+    assert 'id="chart-lightbox-slot"' in html
+    assert 'id="close-chart"' in html
+    # le bloc légende+onglets+graphiques doit exister UNE seule fois (déplacé
+    # en JS, jamais dupliqué) — sinon les deux vues se désynchroniseraient
+    assert html.count('id="chart-body"') == 1
+
+
+def test_all_route_has_no_expand_button_when_nothing_has_ever_traded(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": None, "tradingbot_trades": None,
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert 'id="expand-chart"' not in html
+    assert 'id="chart-body"' not in html
+
+
 def test_all_route_shows_every_range_tab_with_tout_selected_by_default(monkeypatch):
     _fake_requests_get(monkeypatch, {
         "tradingbot_state": [{"cash": 1000.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
