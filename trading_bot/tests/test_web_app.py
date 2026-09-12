@@ -151,6 +151,14 @@ class _AlwaysEnterStrategy:
         return self
 
 
+class _FlickerStrategy(_AlwaysEnterStrategy):
+    """Comme _AlwaysEnterStrategy, mais sort systématiquement au tick
+    suivant (sortie sur signal) — sert à forcer une vente de façon
+    déterministe dans un test."""
+    def should_exit_on_signal(self, row):
+        return True
+
+
 def _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=None, max_concurrent_positions=100):
     """Config minimale pour exercer run_tick() sans dépendre de config.yaml
     — un seul symbole, une stratégie stub (voir _AlwaysEnterStrategy)."""
@@ -175,9 +183,9 @@ def _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=None, max_co
     }
 
 
-def _patch_common(monkeypatch, cfg, histories, clock, fake_db):
+def _patch_common(monkeypatch, cfg, histories, clock, fake_db, strategy_cls=_AlwaysEnterStrategy):
     monkeypatch.setattr(web_app, "load_config", lambda: cfg)
-    monkeypatch.setattr(web_app, "regime_strategy_from_config", lambda strategy_cfg: _AlwaysEnterStrategy())
+    monkeypatch.setattr(web_app, "regime_strategy_from_config", lambda strategy_cfg: strategy_cls())
     monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
     monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
     monkeypatch.setattr(web_app, "db", fake_db)
@@ -296,6 +304,34 @@ def test_run_tick_reentry_cooldown_allows_rebuy_once_elapsed(monkeypatch):
 
     assert result["ok"] is True
     assert result["open_positions"] == 1
+
+
+def test_run_tick_sell_equity_after_does_not_double_count_the_closed_position(monkeypatch):
+    """Régression (signalée sur le bot #2) : equity_after journalisé pour
+    une vente comptait la position vendue une seconde fois — le cash de la
+    vente était déjà crédité, mais la position n'était retirée de
+    positions[symbole] qu'après avoir calculé equity_after, donc encore
+    présente dans la somme. Sans autre position ouverte après cette vente,
+    equity_after doit être EXACTEMENT égal à cash_after."""
+    cfg = _minimal_cfg(max_positions_per_symbol=1)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db, strategy_cls=_FlickerStrategy)
+
+    clock.idx += 1
+    web_app.run_tick()  # achète
+    clock.idx += 1
+    web_app.run_tick()  # vend (sortie sur signal, systématique avec _FlickerStrategy)
+
+    sell_trades = [t for t in fake_db.trades if t["side"] == "sell"]
+    assert sell_trades, "aucune vente enregistrée : le scénario ne teste rien"
+    sell = sell_trades[-1]
+    assert sell["equity_after"] == pytest.approx(sell["cash_after"]), (
+        f"equity_after ({sell['equity_after']}) devrait être égal à cash_after "
+        f"({sell['cash_after']}) puisqu'aucune position n'est plus ouverte — "
+        "l'écart correspond à la valeur de la position comptée deux fois"
+    )
 
 
 def test_run_tick_never_leaves_a_position_with_unresolved_substrategy(monkeypatch):

@@ -142,3 +142,35 @@ def test_reentry_cooldown_blocks_immediate_rebuy_but_allows_after_the_window(mon
         assert gap_hours >= cooldown_hours - 1e-9, (
             f"rachat {gap_hours:.1f}h après le précédent, en dessous du cooldown ({cooldown_hours}h)"
         )
+
+
+def test_sell_equity_after_does_not_double_count_the_closed_position(monkeypatch, tmp_path):
+    """Régression (même bug que web_app.py/run_tick, signalé sur le bot #2) :
+    l'equity journalisée pour une vente comptait la position vendue une
+    seconde fois, la position n'étant retirée de self.positions[symbole]
+    qu'après avoir calculé l'equity. Sans autre position ouverte après
+    cette vente, l'equity journalisée doit être EXACTEMENT égale au cash."""
+    log_file = str(tmp_path / "trades.csv")
+    trader = _make_trader(
+        monkeypatch, _FlickerStrategy, max_positions_per_symbol=1, log_file=log_file,
+    )
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    monkeypatch.setattr(paper_trader.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+
+    clock.idx += 1
+    trader.run_once()  # achète
+    clock.idx += 1
+    trader.run_once()  # vend (sortie sur signal, systématique avec _FlickerStrategy)
+
+    import csv
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f))
+    sell_rows = [r for r in rows if r["side"] == "sell"]
+    assert sell_rows, "aucune vente enregistrée : le scénario ne teste rien"
+    sell = sell_rows[-1]
+    assert float(sell["equity_after"]) == pytest.approx(float(sell["cash_after"])), (
+        f"equity_after ({sell['equity_after']}) devrait être égal à cash_after "
+        f"({sell['cash_after']}) puisqu'aucune position n'est plus ouverte — "
+        "l'écart correspond à la valeur de la position comptée deux fois"
+    )

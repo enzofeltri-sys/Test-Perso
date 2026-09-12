@@ -557,8 +557,7 @@ def run_tick() -> dict:
         if not open_positions:
             continue
         row = rows[s]
-        still_open = []
-        for pos in open_positions:
+        for pos in list(open_positions):
             active = pos.get("active_substrategy", "trend")
             sub_strategy = strategies[s].trend_strategy if active == "trend" else strategies[s].range_strategy
 
@@ -571,8 +570,15 @@ def run_tick() -> dict:
                 exit_price, exit_reason = row["close"], "signal"
 
             if exit_price is None:
-                still_open.append(pos)
                 continue
+
+            # Retirer la position AVANT de calculer equity_now : sinon elle
+            # est comptée deux fois (le cash de la vente déjà crédité juste
+            # en dessous, ET sa valeur de marché encore présente dans
+            # positions[s] tant que la liste n'a pas été réassignée) —
+            # exactement le bug signalé sur le bot #2, equity_after gonflé
+            # de la valeur de la position qu'on vient de vendre.
+            positions[s] = [p for p in positions[s] if p is not pos]
 
             exit_price *= (1 - slippage_pct)  # on suppose une exécution légèrement défavorable
             proceeds = pos["qty"] * exit_price
@@ -598,7 +604,6 @@ def run_tick() -> dict:
                       "pnl_usdt": pnl_usdt, "equity_impact_pct": equity_impact_pct,
                       "equity_after": equity_now},
             )
-        positions[s] = still_open
 
     # 2) entrées — coupe-circuits, puis priorisation par momentum, puis
     #    filtre anti-corrélation (identique à paper_trader.py).

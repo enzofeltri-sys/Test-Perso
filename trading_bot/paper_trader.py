@@ -119,8 +119,7 @@ class PortfolioPaperTrader:
             if not open_positions:
                 continue
             row = rows[s]
-            still_open = []
-            for pos in open_positions:
+            for pos in list(open_positions):
                 regime = pos.get("regime")
                 sub_strategy = self.strategies[s].range_strategy if regime == "range" else self.strategies[s].trend_strategy
                 exit_price = exit_reason = None
@@ -133,8 +132,15 @@ class PortfolioPaperTrader:
                     exit_price, exit_reason = row["close"], "signal"
 
                 if exit_price is None:
-                    still_open.append(pos)
                     continue
+
+                # Retirer la position AVANT de calculer equity_now : sinon
+                # elle est comptée deux fois (le cash de la vente déjà
+                # crédité juste en dessous, ET sa valeur de marché encore
+                # présente dans self.positions[s] tant que la liste n'a pas
+                # été réassignée) — même bug que web_app.py/run_tick,
+                # signalé sur le bot #2.
+                self.positions[s] = [p for p in self.positions[s] if p is not pos]
 
                 exit_price *= (1 - self.slippage_pct)  # on suppose une exécution légèrement défavorable
                 proceeds = pos["qty"] * exit_price
@@ -144,7 +150,6 @@ class PortfolioPaperTrader:
                 equity_now = self.cash + _position_value()
                 self._log_trade(s, "sell", exit_price, pos["qty"], exit_reason, equity_now)
                 print(f"[{datetime.now()}] VENTE ({exit_reason})  {s}  {pos['qty']:.6f} @ {exit_price:.2f}")
-            self.positions[s] = still_open
 
         # 2) entrées : coupe-circuits, puis priorisation par momentum, puis filtre de corrélation
         breaker_ok = self.daily_breaker.can_open_new_position() if self.daily_breaker else True
