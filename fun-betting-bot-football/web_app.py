@@ -194,6 +194,10 @@ def _fmt_local(value: str | None) -> str:
     return dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M %Z") if dt else "—"
 
 
+def _esc(value) -> str:
+    return html.escape(str(value)) if value is not None else ""
+
+
 def _describe_selection(market: str, selection: str, home_team: str, away_team: str) -> str:
     """Traduit un code de sélection interne (ex: "H", "Over 2.5", "1X",
     "H & Over 2.5" — voir src/markets.py) en français lisible, pour que le
@@ -279,6 +283,42 @@ def _describe_match_context(match: dict, european_matches: list, deadline: float
         if bits:
             parts.append(f"{label} {team} : " + ", ".join(bits))
     return " | ".join(parts)
+
+
+def _ticket_card(t: dict) -> str:
+    """Une carte HTML pour un ticket (pari seul ou combiné), utilisée à la
+    fois sur la page de statut (paris en cours + 3 derniers réglés) et sur
+    /historique (tout l'historique réglé) — voir _render_status_page et
+    _render_history_page."""
+    legs = sorted(t.get("legs") or [], key=lambda leg: leg.get("commence_time") or "")
+    kind = "Pari simple" if len(legs) == 1 else "Combiné"
+    stake = float(t.get("stake") or 0)
+    odds = float(t.get("odds") or 0)
+    potential_gain = stake * (odds - 1)
+    pnl = t.get("pnl")
+    pnl_value = float(pnl) if pnl is not None else None
+    pnl_text = f'{"gagné" if pnl_value >= 0 else "perdu"} {pnl_value:+.2f}€' if pnl_value is not None else ""
+
+    def leg_html(leg) -> str:
+        label = _describe_selection(
+            leg.get("market"), leg.get("selection"), leg.get("home_team"), leg.get("away_team"),
+        )
+        return (
+            f'<div class="leg"><span class="leg-match">{_esc(leg.get("home_team"))} – {_esc(leg.get("away_team"))} '
+            f'<span class="bet-league">{_esc(_league_name(leg.get("league")))} · '
+            f'{_esc(_fmt_local(leg.get("commence_time")))}</span></span>'
+            f'<span class="pill pill-{_esc(leg.get("result"))}">{_esc(label)} @ {float(leg.get("odds") or 0):.2f}</span></div>'
+        )
+
+    legs_html = "".join(leg_html(leg) for leg in legs)
+    return (
+        f'<div class="bet-row"><div class="bet-match">{kind} · {len(legs)} match(s) '
+        f'<span class="bet-league">cote totale {odds:.2f} · prob {float(t.get("prob") or 0):.0%}</span></div>'
+        f'{legs_html}'
+        f'<div class="bet-meta"><span class="pill pill-{_esc(t.get("status"))}">{_esc(t.get("status"))}</span>'
+        f'<span class="mono">mise {stake:.2f}€ → gain potentiel +{potential_gain:.2f}€</span>'
+        f'<span class="mono">{pnl_text}</span></div></div>'
+    )
 
 
 def _place_new_bets(state: dict, errors: list) -> int:
@@ -493,13 +533,22 @@ def status():
     except Exception:
         pass
 
-    recent_tickets = _safe_call(supabase_state.get_recent_tickets, 15, default=[])
+    pending_tickets = _safe_call(supabase_state.get_pending_tickets, default=[])
+    recent_settled = _safe_call(supabase_state.get_recent_settled_tickets, 3, default=[])
     settled_tickets = _safe_call(supabase_state.get_settled_tickets_chronological, 300, default=[])
     journal = _safe_call(supabase_state.get_recent_journal, 40, default=[])
     errors = _safe_call(supabase_state.get_recent_errors, 5, default=[])
     model_row = _safe_call(supabase_state.load_model, default={})
 
-    return _render_status_page(bankroll, recent_tickets, settled_tickets, journal, errors, model_row)
+    return _render_status_page(
+        bankroll, pending_tickets, recent_settled, settled_tickets, journal, errors, model_row,
+    )
+
+
+@app.route("/historique")
+def history():
+    settled_tickets = _safe_call(supabase_state.get_settled_tickets_history, 500, default=[])
+    return _render_history_page(settled_tickets)
 
 
 def _safe_call(fn, *args, default=None):
@@ -635,17 +684,82 @@ def _build_bankroll_chart_svg(points: list) -> str:
     return "".join(parts)
 
 
-def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, errors, model_row) -> str:
+# Styles partagés par la page de statut (/) et l'historique (/historique)
+# — extrait une fois pour ne jamais dupliquer ce bloc entre les deux pages.
+_PAGE_STYLE = """
+:root{
+  --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
+  --rule:#DBDBD6; --card:#EBEBE7; --series-4:#8558d3;
+  --pill-won-bg:#e4f1e8; --pill-won-text:#3E7A52;
+  --pill-lost-bg:#f6e6e4; --pill-lost-text:#A3453A;
+  --pill-pending-bg:#eeeae4; --pill-pending-text:#767671;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
+    --rule:#333432; --card:#1F2022; --series-4:#9a72dd;
+    --pill-won-bg:#1c2c22; --pill-won-text:#6FAE87;
+    --pill-lost-bg:#2c1e1c; --pill-lost-text:#D08076;
+    --pill-pending-bg:#232323; --pill-pending-text:#8E8E88;
+  }
+}
+*{ box-sizing:border-box; margin:0; }
+body{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }
+.wrap{ max-width:640px; margin:0 auto; padding:40px 20px 64px; }
+.mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-variant-numeric:tabular-nums; }
+.kicker{ font-family:"IBM Plex Mono", monospace; font-size:0.7rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-faint); margin-bottom:8px; }
+h1{ font-family:"Fraunces", serif; font-weight:500; font-size:1.7rem; margin-bottom:4px; }
+.disclaimer{ font-size:0.8rem; color:var(--text-muted); margin-bottom:28px; }
+.card{ background:var(--card); border-radius:14px; padding:20px 22px; margin-bottom:18px; }
+.bankroll-value{ font-family:"IBM Plex Mono", monospace; font-size:2.4rem; font-weight:500; margin:4px 0 2px; }
+.bankroll-delta{ font-size:0.85rem; font-weight:500; }
+.bankroll-delta.pos{ color:#3E7A52; }
+.bankroll-delta.neg{ color:#A3453A; }
+.chart-wrap{ margin-top:14px; }
+.empty{ font-size:0.82rem; color:var(--text-faint); }
+h2{ font-size:0.92rem; font-weight:500; margin-bottom:12px; }
+.sub{ font-size:0.78rem; color:var(--text-muted); margin-bottom:14px; }
+.card-head{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:12px; }
+.card-head h2{ margin-bottom:0; }
+a.link{ font-size:0.78rem; color:var(--text-muted); }
+.bet-row{ padding:10px 0; border-bottom:1px solid var(--rule); }
+.bet-row:last-child{ border-bottom:none; }
+.bet-match{ font-size:0.92rem; font-weight:500; margin-bottom:4px; }
+.bet-league{ font-size:0.7rem; color:var(--text-faint); font-weight:400; }
+.bet-meta{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:0.78rem; color:var(--text-muted); }
+.leg{ display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:0.82rem; padding:4px 0; }
+.leg-match{ color:var(--text-muted); }
+.pill{ padding:2px 8px; border-radius:999px; font-size:0.72rem; font-weight:500; }
+.pill-won{ background:var(--pill-won-bg); color:var(--pill-won-text); }
+.pill-lost{ background:var(--pill-lost-bg); color:var(--pill-lost-text); }
+.pill-pending{ background:var(--pill-pending-bg); color:var(--pill-pending-text); }
+.list{ list-style:none; font-size:0.82rem; }
+.list li{ padding:6px 0; border-bottom:1px solid var(--rule); display:flex; gap:10px; }
+.list li:last-child{ border-bottom:none; }
+.list li .mono{ color:var(--text-faint); flex-shrink:0; }
+footer{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align:center; }
+"""
+
+_PAGE_HEAD = """<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">"""
+
+
+def _ticket_end_date(t: dict) -> str:
+    """Date de fin d'un ticket = coup d'envoi de sa DERNIÈRE jambe (le
+    ticket ne se règle qu'une fois tous les matchs joués) — chaîne
+    ISO8601, donc triable directement sans parsing (ordre alphabétique
+    = ordre chronologique)."""
+    times = [leg.get("commence_time") for leg in (t.get("legs") or []) if leg.get("commence_time")]
+    return max(times) if times else ""
+
+
+def _render_status_page(
+    bankroll, pending_tickets, recent_settled, settled_tickets, journal, errors, model_row,
+) -> str:
     label = os.environ.get("BOT_LABEL") or "bot de paris football virtuels"
     metrics = (model_row or {}).get("backtest_metrics") or {}
     trained_at = (model_row or {}).get("trained_at") or None
-
-    def esc(value) -> str:
-        return html.escape(str(value)) if value is not None else ""
-
-    def fmt_ts(value) -> str:
-        dt = _parse_iso(value) if value else None
-        return dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M %Z") if dt else "—"
 
     chart_points = []
     for t in settled_tickets:
@@ -657,64 +771,31 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
     pnl_since_start = bankroll - config.INITIAL_BANKROLL
     roi_live_pct = pnl_since_start / config.INITIAL_BANKROLL * 100
 
-    def ticket_card(t) -> str:
-        legs = sorted(t.get("legs") or [], key=lambda leg: leg.get("commence_time") or "")
-        kind = "Pari simple" if len(legs) == 1 else "Combiné"
-        stake = float(t.get("stake") or 0)
-        odds = float(t.get("odds") or 0)
-        potential_gain = stake * (odds - 1)
-        pnl = t.get("pnl")
-        pnl_value = float(pnl) if pnl is not None else None
-        pnl_text = f'{"gagné" if pnl_value >= 0 else "perdu"} {pnl_value:+.2f}€' if pnl_value is not None else ""
-
-        def leg_html(leg) -> str:
-            label = _describe_selection(
-                leg.get("market"), leg.get("selection"), leg.get("home_team"), leg.get("away_team"),
-            )
-            return (
-                f'<div class="leg"><span class="leg-match">{esc(leg.get("home_team"))} – {esc(leg.get("away_team"))} '
-                f'<span class="bet-league">{esc(_league_name(leg.get("league")))} · '
-                f'{esc(_fmt_local(leg.get("commence_time")))}</span></span>'
-                f'<span class="pill pill-{esc(leg.get("result"))}">{esc(label)} @ {float(leg.get("odds") or 0):.2f}</span></div>'
-            )
-
-        legs_html = "".join(leg_html(leg) for leg in legs)
-        return (
-            f'<div class="bet-row"><div class="bet-match">{kind} · {len(legs)} match(s) '
-            f'<span class="bet-league">cote totale {odds:.2f} · prob {float(t.get("prob") or 0):.0%}</span></div>'
-            f'{legs_html}'
-            f'<div class="bet-meta"><span class="pill pill-{esc(t.get("status"))}">{esc(t.get("status"))}</span>'
-            f'<span class="mono">mise {stake:.2f}€ → gain potentiel +{potential_gain:.2f}€</span>'
-            f'<span class="mono">{pnl_text}</span></div></div>'
-        )
-
-    def _ticket_end_date(t) -> str:
-        """Date de fin d'un ticket = coup d'envoi de sa DERNIÈRE jambe (le
-        ticket ne se règle qu'une fois tous les matchs joués) — chaîne
-        ISO8601, donc triable directement sans parsing (ordre alphabétique
-        = ordre chronologique)."""
-        times = [leg.get("commence_time") for leg in (t.get("legs") or []) if leg.get("commence_time")]
-        return max(times) if times else ""
-
-    pending_tickets = sorted(
-        (t for t in recent_tickets if t.get("status") == "pending"), key=_ticket_end_date,
+    total_stake_pending = sum(float(t.get("stake") or 0) for t in pending_tickets)
+    total_potential_gain_pending = sum(
+        float(t.get("stake") or 0) * (float(t.get("odds") or 0) - 1) for t in pending_tickets
     )
-    other_tickets = [t for t in recent_tickets if t.get("status") != "pending"]
-    ordered_tickets = pending_tickets + other_tickets
 
-    bet_cards = "".join(ticket_card(t) for t in ordered_tickets) or '<p class="empty">Aucun pari pour l\'instant.</p>'
+    # Paris en cours triés par date de fin croissante (le plus proche
+    # d'abord) + seulement les 3 derniers réglés — l'historique complet est
+    # sur /historique pour ne pas noyer les paris en cours sous des
+    # dizaines de tickets déjà réglés.
+    pending_for_display = sorted(pending_tickets, key=_ticket_end_date)
+    ordered_tickets = pending_for_display + list(recent_settled)
+
+    bet_cards = "".join(_ticket_card(t) for t in ordered_tickets) or '<p class="empty">Aucun pari pour l\'instant.</p>'
 
     is_preview = lambda j: (j.get("data") or {}).get("event") == "match_preview"
     main_journal = [j for j in journal if not is_preview(j)][:12]
     preview_journal = [j for j in journal if is_preview(j)][:10]
 
     journal_items = "".join(
-        f'<li><span class="mono">{fmt_ts(j.get("ts"))}</span> {esc(j.get("message"))}</li>'
+        f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span> {_esc(j.get("message"))}</li>'
         for j in main_journal
     ) or '<li class="empty">Rien pour l\'instant.</li>'
 
     preview_items = "".join(
-        f'<li><span class="mono">{fmt_ts(j.get("ts"))}</span> {esc(j.get("message"))}</li>'
+        f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span> {_esc(j.get("message"))}</li>'
         for j in preview_journal
     )
     preview_block = (
@@ -727,7 +808,7 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
 
     errors_block = ""
     if errors:
-        errors_items = "".join(f'<li><span class="mono">{fmt_ts(e.get("ts"))}</span> {esc(e.get("message"))}</li>' for e in errors)
+        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span> {_esc(e.get("message"))}</li>' for e in errors)
         errors_block = f'<div class="card"><h2>Erreurs récentes</h2><ul class="list">{errors_items}</ul></div>'
 
     chart_block = (
@@ -738,10 +819,10 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
 
     trained_dt = _parse_iso(trained_at) if trained_at else None
     trained_line = (
-        f'Entraîné le {esc(trained_dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M %Z"))} — backtest : '
-        f'ROI {esc(metrics.get("roi_pct"))}% · yield {esc(metrics.get("yield_pct"))}% · '
-        f'{esc(metrics.get("num_bets"))} tickets · win rate {esc(metrics.get("win_rate"))}% · '
-        f'drawdown max {esc(metrics.get("max_drawdown_pct"))}% '
+        f'Entraîné le {_esc(trained_dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M %Z"))} — backtest : '
+        f'ROI {_esc(metrics.get("roi_pct"))}% · yield {_esc(metrics.get("yield_pct"))}% · '
+        f'{_esc(metrics.get("num_bets"))} tickets · win rate {_esc(metrics.get("win_rate"))}% · '
+        f'drawdown max {_esc(metrics.get("max_drawdown_pct"))}% '
         f'<span class="sub">(backtest 1X2 uniquement, pas de cotes over/under historiques — voir README)</span>'
         if trained_dt else
         "Pas encore de modèle entraîné — voir DEPLOIEMENT.md."
@@ -752,65 +833,14 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(label)}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<style>
-:root{{
-  --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
-  --rule:#DBDBD6; --card:#EBEBE7; --series-4:#8558d3;
-  --pill-won-bg:#e4f1e8; --pill-won-text:#3E7A52;
-  --pill-lost-bg:#f6e6e4; --pill-lost-text:#A3453A;
-  --pill-pending-bg:#eeeae4; --pill-pending-text:#767671;
-}}
-@media (prefers-color-scheme: dark){{
-  :root{{
-    --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
-    --rule:#333432; --card:#1F2022; --series-4:#9a72dd;
-    --pill-won-bg:#1c2c22; --pill-won-text:#6FAE87;
-    --pill-lost-bg:#2c1e1c; --pill-lost-text:#D08076;
-    --pill-pending-bg:#232323; --pill-pending-text:#8E8E88;
-  }}
-}}
-*{{ box-sizing:border-box; margin:0; }}
-body{{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }}
-.wrap{{ max-width:640px; margin:0 auto; padding:40px 20px 64px; }}
-.mono{{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-variant-numeric:tabular-nums; }}
-.kicker{{ font-family:"IBM Plex Mono", monospace; font-size:0.7rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-faint); margin-bottom:8px; }}
-h1{{ font-family:"Fraunces", serif; font-weight:500; font-size:1.7rem; margin-bottom:4px; }}
-.disclaimer{{ font-size:0.8rem; color:var(--text-muted); margin-bottom:28px; }}
-.card{{ background:var(--card); border-radius:14px; padding:20px 22px; margin-bottom:18px; }}
-.bankroll-value{{ font-family:"IBM Plex Mono", monospace; font-size:2.4rem; font-weight:500; margin:4px 0 2px; }}
-.bankroll-delta{{ font-size:0.85rem; font-weight:500; }}
-.bankroll-delta.pos{{ color:#3E7A52; }}
-.bankroll-delta.neg{{ color:#A3453A; }}
-.chart-wrap{{ margin-top:14px; }}
-.empty{{ font-size:0.82rem; color:var(--text-faint); }}
-h2{{ font-size:0.92rem; font-weight:500; margin-bottom:12px; }}
-.sub{{ font-size:0.78rem; color:var(--text-muted); margin-bottom:14px; }}
-.bet-row{{ padding:10px 0; border-bottom:1px solid var(--rule); }}
-.bet-row:last-child{{ border-bottom:none; }}
-.bet-match{{ font-size:0.92rem; font-weight:500; margin-bottom:4px; }}
-.bet-league{{ font-size:0.7rem; color:var(--text-faint); font-weight:400; }}
-.bet-meta{{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:0.78rem; color:var(--text-muted); }}
-.leg{{ display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:0.82rem; padding:4px 0; }}
-.leg-match{{ color:var(--text-muted); }}
-.pill{{ padding:2px 8px; border-radius:999px; font-size:0.72rem; font-weight:500; }}
-.pill-won{{ background:var(--pill-won-bg); color:var(--pill-won-text); }}
-.pill-lost{{ background:var(--pill-lost-bg); color:var(--pill-lost-text); }}
-.pill-pending{{ background:var(--pill-pending-bg); color:var(--pill-pending-text); }}
-.list{{ list-style:none; font-size:0.82rem; }}
-.list li{{ padding:6px 0; border-bottom:1px solid var(--rule); display:flex; gap:10px; }}
-.list li:last-child{{ border-bottom:none; }}
-.list li .mono{{ color:var(--text-faint); flex-shrink:0; }}
-footer{{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align:center; }}
-</style>
+<title>{_esc(label)}</title>
+{_PAGE_HEAD}
+<style>{_PAGE_STYLE}</style>
 </head>
 <body>
 <div class="wrap">
   <p class="kicker">⚽ Paris virtuels</p>
-  <h1>{esc(label)}</h1>
+  <h1>{_esc(label)}</h1>
   <p class="disclaimer">100% éducatif — aucun argent réel n'est en jeu, aucun pari réel n'est placé.</p>
 
   <div class="card">
@@ -819,6 +849,8 @@ footer{{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align
     <div class="bankroll-delta {'pos' if pnl_since_start >= 0 else 'neg'}">
       {'+' if pnl_since_start >= 0 else ''}{pnl_since_start:,.2f} depuis le départ ({roi_live_pct:+.1f}%)
     </div>
+    <p class="sub">Mise totale en cours : {total_stake_pending:,.2f}€ ·
+      gain potentiel : +{total_potential_gain_pending:,.2f}€ ({len(pending_tickets)} pari(s))</p>
     {chart_block}
   </div>
 
@@ -828,7 +860,7 @@ footer{{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align
   </div>
 
   <div class="card">
-    <h2>Derniers tickets</h2>
+    <div class="card-head"><h2>Derniers tickets</h2><a class="link" href="/historique">Historique complet →</a></div>
     {bet_cards}
   </div>
 
@@ -842,6 +874,35 @@ footer{{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align
   {errors_block}
 
   <footer>Lecture seule — <span class="mono">/tick</span> déclenche un cycle (pensé pour UptimeRobot).</footer>
+</div>
+</body>
+</html>"""
+
+
+def _render_history_page(settled_tickets: list) -> str:
+    """Historique complet des tickets réglés (won/lost) — la page de statut
+    n'en garde que les 3 derniers pour ne pas noyer les paris en cours."""
+    label = os.environ.get("BOT_LABEL") or "bot de paris football virtuels"
+    cards = "".join(_ticket_card(t) for t in settled_tickets) or '<p class="empty">Aucun pari réglé pour l\'instant.</p>'
+
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Historique — {_esc(label)}</title>
+{_PAGE_HEAD}
+<style>{_PAGE_STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="kicker">⚽ Paris virtuels</p>
+  <div class="card-head"><h1>Historique</h1><a class="link" href="/">← Retour</a></div>
+  <p class="disclaimer">Tous les tickets réglés (gagnés et perdus), les plus récents d'abord.</p>
+
+  <div class="card">
+    {cards}
+  </div>
 </div>
 </body>
 </html>"""

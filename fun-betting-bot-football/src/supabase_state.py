@@ -321,21 +321,42 @@ def get_pending_ticket_ids() -> list:
     return [row["id"] for row in resp.json()]
 
 
-def get_recent_tickets(limit: int = 10) -> list:
-    """Tickets récents AVEC leurs jambes (embedding PostgREST via la
-    relation bet_id), pour l'affichage sur la page de statut."""
+def _tickets_with_legs(params: dict) -> list:
+    """Tickets AVEC leurs jambes (embedding PostgREST via la relation
+    bet_id) selon les filtres/tri fournis dans `params`."""
     legs_table = _table("bet_legs")
     url = f"{_base_url()}/{_table('bets')}"
     resp = requests.get(
         url, headers=_headers(),
-        params={"select": f"*,{legs_table}(*)", "order": "ts.desc", "limit": str(limit)},
-        timeout=15,
+        params={**params, "select": f"*,{legs_table}(*)"}, timeout=15,
     )
     resp.raise_for_status()
     rows = resp.json()
     for row in rows:
         row["legs"] = row.pop(legs_table, [])
     return rows
+
+
+def get_pending_tickets() -> list:
+    """TOUS les tickets en attente, avec leurs jambes — à la fois pour les
+    afficher intégralement (paris en cours, jamais tronqués) et pour
+    agréger mise totale/gain potentiel sur la page de statut (voir
+    web_app._render_status_page)."""
+    return _tickets_with_legs({"status": "eq.pending"})
+
+
+def get_recent_settled_tickets(limit: int = 3) -> list:
+    """Les `limit` derniers tickets réglés (won/lost), les plus récents
+    d'abord — affichés sur la page de statut ; l'historique complet est sur
+    /historique (voir get_settled_tickets_history)."""
+    return _tickets_with_legs({"status": "in.(won,lost)", "order": "settled_at.desc", "limit": str(limit)})
+
+
+def get_settled_tickets_history(limit: int = 500) -> list:
+    """Tous les tickets réglés (won/lost), les plus récents d'abord — pour
+    la page /historique (contrairement à get_settled_tickets_chronological,
+    qui n'a pas les jambes et sert uniquement à la courbe de bankroll)."""
+    return _tickets_with_legs({"status": "in.(won,lost)", "order": "settled_at.desc", "limit": str(limit)})
 
 
 def get_settled_tickets_chronological(limit: int = 300) -> list:
