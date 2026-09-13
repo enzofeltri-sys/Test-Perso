@@ -150,7 +150,10 @@ API-Football est utilisé pour les deux signaux (blessures ET détection
 qu'un rapprochement par nom puisque basé sur l'id d'équipe déjà résolu) —
 conforme à sa doc officielle : vérification du champ `errors` à chaque
 réponse, suivi du quota journalier (`x-ratelimit-requests-remaining`,
-100/jour en free tier) avec arrêt automatique des appels sous le seuil.
+100/jour en free tier) avec arrêt automatique des appels sous le seuil,
+et plafond d'appels par cycle (`API_FOOTBALL_MAX_CALLS_PER_CYCLE`, 6)
+pour rester sous la limite de 10 requêtes/**minute** du free tier — la
+dépasser de façon répétée peut bloquer la clé.
 football-data.org sert de second avis indépendant pour la coupe d'Europe
 (rapprochement par sous-chaîne, moins fiable, à confirmer une fois
 déployé) — les IDs de compétition UEFA d'API-Football

@@ -266,6 +266,7 @@ def _place_new_bets(state: dict, errors: list) -> int:
             state["odds_api_remaining"] = api_remaining
 
         try:
+            external_data.reset_call_budget()
             european_matches = external_data.fetch_recent_european_matches()
         except Exception:
             european_matches = []

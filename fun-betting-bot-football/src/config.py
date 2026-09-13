@@ -81,6 +81,13 @@ INJURY_CACHE_HOURS = 24  # évite de re-consommer le quota gratuit (~100/jour) �
 # x-ratelimit-requests-remaining à CHAQUE réponse. Sous ce seuil, on
 # arrête tout nouvel appel jusqu'au lendemain (voir save_api_football_remaining).
 API_FOOTBALL_MIN_REMAINING = 5
+# Le free tier limite aussi à 10 requêtes/MINUTE (en plus du quota
+# journalier) — la dépasser de façon répétée peut bloquer la clé
+# temporairement ou définitivement. Un cycle s'exécute en quelques
+# secondes (largement dans la même fenêtre d'une minute), donc on
+# plafonne le nombre d'appels API-Football par cycle bien en dessous de
+# cette limite plutôt que de suivre un compteur glissant complexe.
+API_FOOTBALL_MAX_CALLS_PER_CYCLE = 6
 # IDs de compétition API-Football pour la coupe d'Europe — usuels mais non
 # vérifiés en direct (réseau restreint au moment de l'écriture) : à
 # confirmer une fois déployé (le journal loggue les ids rencontrés sur

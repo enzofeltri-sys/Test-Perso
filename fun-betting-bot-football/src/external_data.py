@@ -38,17 +38,37 @@ def _api_football_quota_ok() -> bool:
     return remaining is None or remaining >= config.API_FOOTBALL_MIN_REMAINING
 
 
+# Plafond d'appels API-Football pour le cycle EN COURS (voir
+# reset_call_budget) — protège la limite de 10 requêtes/MINUTE du free
+# tier, distincte du quota journalier suivi via Supabase. Réinitialisé une
+# fois par cycle par web_app._place_new_bets, jamais persisté (la fenêtre
+# d'une minute d'API-Football n'a pas besoin d'être suivie entre deux
+# cycles, largement espacés par le throttle ODDS_FETCH_INTERVAL_HOURS).
+_call_budget = {"remaining": None}
+
+
+def reset_call_budget(max_calls: int = None) -> None:
+    """À appeler une fois par cycle, avant toute autre fonction de ce
+    module (voir web_app._place_new_bets)."""
+    _call_budget["remaining"] = max_calls if max_calls is not None else config.API_FOOTBALL_MAX_CALLS_PER_CYCLE
+
+
 def _api_football_get(path: str, params: dict) -> list | None:
-    """GET générique vers API-Football : vérifie le quota AVANT l'appel,
-    suit x-ratelimit-requests-remaining APRÈS, et vérifie le champ
-    `errors` de la réponse (non vide = erreur métier même en HTTP 200,
-    d'après la doc officielle) avant de faire confiance à `response`.
-    None sur tout problème (quota, réseau, erreur API) plutôt que de
-    planter l'appelant."""
+    """GET générique vers API-Football : vérifie le quota journalier ET le
+    budget d'appels du cycle AVANT l'appel, suit x-ratelimit-requests-remaining
+    APRÈS, et vérifie le champ `errors` de la réponse (non vide = erreur
+    métier même en HTTP 200, d'après la doc officielle) avant de faire
+    confiance à `response`. None sur tout problème (quota, budget, réseau,
+    erreur API) plutôt que de planter l'appelant."""
     if not config.API_FOOTBALL_KEY or not _api_football_quota_ok():
+        return None
+    if _call_budget["remaining"] is not None and _call_budget["remaining"] <= 0:
         return None
 
     try:
+        _call_budget["remaining"] = (
+            _call_budget["remaining"] - 1 if _call_budget["remaining"] is not None else None
+        )
         resp = requests.get(
             f"{config.API_FOOTBALL_BASE_URL}/{path}",
             headers=_api_football_headers(), params=params, timeout=10,
