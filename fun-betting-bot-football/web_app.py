@@ -33,6 +33,7 @@ minutes par UptimeRobot.
 import os
 import html
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -278,6 +279,19 @@ def _place_new_bets(state: dict, errors: list) -> int:
         except Exception:
             european_matches = []
 
+        # Budget de temps global (pas juste par appel) pour l'enrichissement
+        # contexte (blessures/coupe d'Europe) : chaque appel réseau a déjà
+        # son propre timeout (voir supabase_state.get_team_ref,
+        # external_data._api_football_get), mais avec plusieurs matchs à
+        # 2 équipes chacune, la SOMME de ces appels peut quand même dépasser
+        # le timeout gunicorn (60s) et faire planter le worker en plein
+        # cycle — vécu en prod (WORKER TIMEOUT / SIGKILL, /tick en 500,
+        # aucun ticket placé) alors même que chaque fonction de
+        # src/external_data.py est individuellement best-effort. Passé ce
+        # budget, on continue à évaluer/parier normalement mais sans
+        # contexte affiché pour les matchs restants — jamais l'inverse.
+        context_deadline = time.monotonic() + 20
+
         round_matches = []
         for match in upcoming:
             if supabase_state.leg_exists(match["home_team"], match["away_team"], match["commence_time"]):
@@ -299,10 +313,12 @@ def _place_new_bets(state: dict, errors: list) -> int:
             candidates = markets.build_candidates(probs, match["odds"])
 
             message = _describe_match_markets(match, probs, candidates)
-            try:
-                context = _describe_match_context(match, european_matches)
-            except Exception:
-                context = ""
+            context = ""
+            if time.monotonic() < context_deadline:
+                try:
+                    context = _describe_match_context(match, european_matches)
+                except Exception:
+                    context = ""
             if context:
                 message += f" || Contexte : {context}"
             supabase_state.log_journal_entry("bot", message, {"event": "match_preview"})
