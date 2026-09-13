@@ -158,12 +158,16 @@ def _settle_pending_bets(state: dict, errors: list) -> int:
             state["bankroll"] += payout
             supabase_state.finalize_ticket(bet_id, "won" if won else "lost", round(pnl, 2), round(state["bankroll"], 2))
 
-            legs_desc = ", ".join(f"{leg['home_team']}-{leg['away_team']}:{leg['selection']}" for leg in legs)
-            kind = "combiné" if len(legs) > 1 else "pari"
+            kind = "Pari simple" if len(legs) == 1 else f"Combiné ({len(legs)} matchs)"
+            legs_desc = ", ".join(
+                f"{leg['home_team']}-{leg['away_team']} : "
+                f"{_describe_selection(leg['market'], leg['selection'], leg['home_team'], leg['away_team'])}"
+                for leg in legs
+            )
             supabase_state.log_journal_entry(
                 "bot",
-                f"Ticket réglé ({kind}, {len(legs)} jambe(s)) : {legs_desc} — "
-                f"{'gagné' if won else 'perdu'} ({pnl:+.2f}). Bankroll : {state['bankroll']:.2f}.",
+                f"Ticket réglé ({kind}) : {legs_desc} — "
+                f"{'gagné' if won else 'perdu'} ({pnl:+.2f}€). Bankroll : {state['bankroll']:.2f}€.",
                 {"event": "settlement"},
             )
             settled_tickets += 1
@@ -176,19 +180,67 @@ def _settle_pending_bets(state: dict, errors: list) -> int:
     return settled_tickets
 
 
+def _league_name(code: str) -> str:
+    """Nom lisible d'une ligue (ex: "E0" -> "Premier League") — voir
+    config.LEAGUES. Retourne le code tel quel s'il est inconnu plutôt que
+    de planter l'affichage."""
+    return config.LEAGUES.get(code, code)
+
+
+def _fmt_local(value: str | None) -> str:
+    """Date/heure d'un match en heure française (voir _LOCAL_TZ), pour
+    affichage seulement — les timestamps internes restent en UTC."""
+    dt = _parse_iso(value) if value else None
+    return dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M %Z") if dt else "—"
+
+
+def _describe_selection(market: str, selection: str, home_team: str, away_team: str) -> str:
+    """Traduit un code de sélection interne (ex: "H", "Over 2.5", "1X",
+    "H & Over 2.5" — voir src/markets.py) en français lisible, pour que le
+    pari soit compréhensible sans connaître les conventions internes du
+    bot."""
+    def outcome(code: str) -> str:
+        return {"H": f"Victoire {home_team}", "D": "Match nul", "A": f"Victoire {away_team}"}.get(code, code)
+
+    def goals(direction: str, line: str) -> str:
+        word = "Plus" if direction == "Over" else "Moins"
+        return f"{word} de {line.replace('.', ',')} buts"
+
+    if market == "1x2":
+        return outcome(selection)
+    if market == "double_chance":
+        return {
+            "1X": f"{home_team} ou nul",
+            "X2": f"{away_team} ou nul",
+            "12": f"{home_team} ou {away_team} (pas de nul)",
+        }.get(selection, selection)
+    if market == "totals":
+        direction, line = selection.split()
+        return goals(direction, line)
+    if market == "result_and_goals":
+        outcome_code, _, goals_part = selection.partition(" & ")
+        direction, line = goals_part.split()
+        return f"{outcome(outcome_code)} & {goals(direction, line).lower()}"
+    return selection
+
+
 def _describe_match_markets(match: dict, probs: dict, candidates: list) -> str:
     """Résumé compact de tous les marchés d'un match, pour le journal —
     permet de comprendre gains/pertes même sur les marchés jamais pariés
     (double chance, résultat+buts : toujours estimés, voir src/markets)."""
     def fmt(c):
         tag = " (estimé)" if c["is_estimated"] else ""
-        return f"{c['selection']}@{c['odds']:.2f}({c['prob']:.0%}){tag}"
+        label = _describe_selection(c["market"], c["selection"], match["home_team"], match["away_team"])
+        return f"{label}@{c['odds']:.2f}({c['prob']:.0%}){tag}"
 
     by_market = {}
     for c in candidates:
         by_market.setdefault(c["market"], []).append(c)
 
-    parts = [f"{match['home_team']} vs {match['away_team']} ({match['league']})"]
+    parts = [
+        f"{match['home_team']} vs {match['away_team']} "
+        f"({_league_name(match['league'])}, {_fmt_local(match.get('commence_time'))})"
+    ]
     labels = {"1x2": "1X2", "double_chance": "Double chance", "totals": "Buts", "result_and_goals": "Résultat+buts"}
     for market, label in labels.items():
         if market in by_market:
@@ -352,12 +404,20 @@ def _place_new_bets(state: dict, errors: list) -> int:
             } for leg in ticket["legs"]]
             supabase_state.insert_ticket(stake, round(ticket["prob"], 6), ticket["odds"], round(ticket["ev"], 4), legs_payload)
 
-            kind = "combiné" if len(ticket["legs"]) > 1 else "pari"
-            legs_desc = ", ".join(f"{leg['match']['home_team']}-{leg['match']['away_team']}:{leg['selection']}@{leg['odds']:.2f}" for leg in ticket["legs"])
+            kind = "Pari simple" if len(ticket["legs"]) == 1 else f"Combiné ({len(ticket['legs'])} matchs)"
+            legs_desc = ", ".join(
+                f"{leg['match']['home_team']}-{leg['match']['away_team']} "
+                f"({_fmt_local(leg['match'].get('commence_time'))}) : "
+                f"{_describe_selection(leg['market'], leg['selection'], leg['match']['home_team'], leg['match']['away_team'])} "
+                f"@ {leg['odds']:.2f}"
+                for leg in ticket["legs"]
+            )
+            potential_gain = stake * (ticket["odds"] - 1)
             supabase_state.log_journal_entry(
                 "bot",
-                f"Nouveau {kind} ({len(ticket['legs'])} jambe(s)) : {legs_desc} — "
-                f"prob {ticket['prob']:.1%}, cote {ticket['odds']:.2f}, EV {ticket['ev']:+.1%}, mise {stake:.2f}.",
+                f"Nouveau {kind} : {legs_desc} — "
+                f"prob {ticket['prob']:.1%}, cote totale {ticket['odds']:.2f}, EV {ticket['ev']:+.1%}, "
+                f"mise {stake:.2f}€ → gain potentiel +{potential_gain:.2f}€.",
                 {"event": "new_bet"},
             )
             tickets_placed += 1
@@ -581,20 +641,33 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
 
     def ticket_card(t) -> str:
         legs = sorted(t.get("legs") or [], key=lambda leg: leg.get("commence_time") or "")
-        kind = "Combiné" if len(legs) > 1 else "Simple"
-        legs_html = "".join(
-            f'<div class="leg"><span class="leg-match">{esc(leg.get("home_team"))} – {esc(leg.get("away_team"))} '
-            f'<span class="bet-league">{esc(leg.get("league"))}</span></span>'
-            f'<span class="pill pill-{esc(leg.get("result"))}">{esc(leg.get("selection"))} @ {esc(leg.get("odds"))}</span></div>'
-            for leg in legs
-        )
+        kind = "Pari simple" if len(legs) == 1 else "Combiné"
+        stake = float(t.get("stake") or 0)
+        odds = float(t.get("odds") or 0)
+        potential_gain = stake * (odds - 1)
+        pnl = t.get("pnl")
+        pnl_value = float(pnl) if pnl is not None else None
+        pnl_text = f'{"gagné" if pnl_value >= 0 else "perdu"} {pnl_value:+.2f}€' if pnl_value is not None else ""
+
+        def leg_html(leg) -> str:
+            label = _describe_selection(
+                leg.get("market"), leg.get("selection"), leg.get("home_team"), leg.get("away_team"),
+            )
+            return (
+                f'<div class="leg"><span class="leg-match">{esc(leg.get("home_team"))} – {esc(leg.get("away_team"))} '
+                f'<span class="bet-league">{esc(_league_name(leg.get("league")))} · '
+                f'{esc(_fmt_local(leg.get("commence_time")))}</span></span>'
+                f'<span class="pill pill-{esc(leg.get("result"))}">{esc(label)} @ {float(leg.get("odds") or 0):.2f}</span></div>'
+            )
+
+        legs_html = "".join(leg_html(leg) for leg in legs)
         return (
             f'<div class="bet-row"><div class="bet-match">{kind} · {len(legs)} match(s) '
-            f'<span class="bet-league">cote {esc(t.get("odds"))} · prob {float(t.get("prob") or 0):.0%}</span></div>'
+            f'<span class="bet-league">cote totale {odds:.2f} · prob {float(t.get("prob") or 0):.0%}</span></div>'
             f'{legs_html}'
             f'<div class="bet-meta"><span class="pill pill-{esc(t.get("status"))}">{esc(t.get("status"))}</span>'
-            f'<span class="mono">mise {esc(t.get("stake"))}</span>'
-            f'<span class="mono">{esc(t.get("pnl")) if t.get("pnl") is not None else ""}</span></div></div>'
+            f'<span class="mono">mise {stake:.2f}€ → gain potentiel +{potential_gain:.2f}€</span>'
+            f'<span class="mono">{pnl_text}</span></div></div>'
         )
 
     bet_cards = "".join(ticket_card(t) for t in recent_tickets) or '<p class="empty">Aucun pari pour l\'instant.</p>'
