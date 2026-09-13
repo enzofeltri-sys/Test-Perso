@@ -11,6 +11,13 @@ compris) :
           le justifie. Fait pour être appelé régulièrement par UptimeRobot.
   /alert-test  vérifie la chaîne d'alerte (voir alerts.py), protégé par
                ALERT_TEST_TOKEN.
+  /admin/retrain  déclenche retrain.py directement depuis ce service (protégé
+               par RETRAIN_TOKEN) — alternative au workflow GitHub Actions
+               pour le tout premier entraînement (ou un entraînement manuel),
+               utile quand on n'a pas encore accès aux secrets du dépôt.
+               Ce service a un accès réseau normal (contrairement à un
+               environnement de dev restreint) donc le téléchargement
+               football-data.co.uk y fonctionne.
 
 Aucun argent réel n'est jamais en jeu : "bankroll" est une unité virtuelle,
 "paris" ne sont que des lignes dans Supabase. Voir README.md.
@@ -282,6 +289,29 @@ def alert_test():
         "ok": False, "alert_configured": True,
         "error": "ALERT_WEBHOOK_URL est définie mais l'envoi a échoué : URL invalide, webhook supprimé, ou service injoignable.",
     }), 200
+
+
+@app.route("/admin/retrain")
+def admin_retrain():
+    """Déclenche retrain.py directement depuis ce service — voir le
+    docstring en tête de fichier. Protégé par RETRAIN_TOKEN (absent =
+    endpoint désactivé, même logique que /alert-test). Synchrone : le
+    ré-entraînement complet (téléchargement + entraînement + backtest)
+    prend quelques secondes, largement sous le timeout gunicorn (60s)."""
+    expected = os.environ.get("RETRAIN_TOKEN")
+    if not expected:
+        return jsonify({"error": "RETRAIN_TOKEN n'est pas défini — endpoint désactivé."}), 404
+    if request.args.get("token") != expected:
+        return jsonify({"error": "jeton invalide"}), 403
+
+    import retrain as retrain_module
+
+    try:
+        result = retrain_module.run(dry_run=request.args.get("dry_run") == "1")
+        return jsonify(result), 200
+    except Exception as exc:
+        supabase_state.log_error(f"admin/retrain: {exc}")
+        return jsonify({"error": str(exc)}), 500
 
 
 def _nice_step(raw_step: float) -> float:
