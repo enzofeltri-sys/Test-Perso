@@ -136,6 +136,19 @@ def _place_new_bets(state: dict, errors: list) -> int:
     if hours_since is not None and hours_since < config.ODDS_FETCH_INTERVAL_HOURS:
         return 0
 
+    drawdown_floor = config.INITIAL_BANKROLL * config.DRAWDOWN_STOP_FRACTION
+    if state["bankroll"] < drawdown_floor:
+        supabase_state.log_journal_entry(
+            "bot",
+            f"Coupe-circuit : bankroll ({state['bankroll']:.2f}) sous le seuil de "
+            f"{drawdown_floor:.2f} ({config.DRAWDOWN_STOP_FRACTION:.0%} du capital de départ) — "
+            "plus aucun nouveau pari tant qu'elle n'est pas remontée au-dessus. Les paris déjà "
+            "en cours continuent d'être réglés normalement.",
+            {"event": "circuit_breaker"},
+        )
+        state["last_odds_fetch_at"] = _now().isoformat()
+        return 0
+
     placed = 0
     try:
         model_row = supabase_state.load_model()

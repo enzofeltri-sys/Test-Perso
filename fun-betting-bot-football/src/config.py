@@ -89,9 +89,20 @@ CLASS_TO_RESULT = {v: k for k, v in RESULT_TO_CLASS.items()}
 # Stratégie de paris
 # --------------------------------------------------------------------------
 INITIAL_BANKROLL = 1000.0
-EV_THRESHOLD = 0.05          # on ne parie que si EV > 5%
-KELLY_MULTIPLIER = 0.25      # fraction de Kelly (0.25 = "quart de Kelly", plus prudent)
-MAX_STAKE_FRACTION = 0.05    # garde-fou : jamais plus de 5% de la bankroll sur un seul pari
+# Seuils volontairement conservateurs : un premier backtest avec un modèle
+# non calibré et EV_THRESHOLD=0.05 a perdu ~99% de la bankroll (voir
+# model.train_model) en pariant sur 87% des matchs. La calibration corrige
+# la cause première, ces seuils sont une deuxième ligne de défense — un
+# modèle à 8 features de forme ne mérite pas une confiance illimitée.
+EV_THRESHOLD = 0.10          # on ne parie que si EV > 10%
+KELLY_MULTIPLIER = 0.15      # fraction de Kelly (0.15, plus prudent que le "quart de Kelly" classique)
+MAX_STAKE_FRACTION = 0.03    # garde-fou : jamais plus de 3% de la bankroll sur un seul pari
+
+# Coupe-circuit : si la bankroll tombe sous cette fraction du capital de
+# départ, le bot arrête de PARIER (il continue à régler les paris déjà en
+# cours) — dernier filet si le modèle s'avère quand même mauvais malgré la
+# calibration. Se lève automatiquement si la bankroll remonte au-dessus.
+DRAWDOWN_STOP_FRACTION = 0.20
 
 # --------------------------------------------------------------------------
 # Throttle des appels à The Odds API (free tier = 500 crédits/mois ; avec 2
