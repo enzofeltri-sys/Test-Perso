@@ -89,10 +89,11 @@ def _download_one_csv(league: str, season: str, url: str) -> pd.DataFrame | None
 def download_historical_data(
     leagues: Iterable[str] | None = None,
     seasons: Iterable[str] | None = None,
-    save: bool = True,
 ) -> pd.DataFrame:
-    """Télécharge et concatène l'historique football-data.co.uk pour les ligues/saisons
-    demandées, et sauvegarde le résultat dans data/historical_odds.csv."""
+    """Télécharge et concatène l'historique football-data.co.uk pour les
+    ligues/saisons demandées. Rien n'est mis en cache sur disque (le bot
+    tourne sur Render, disque éphémère) — voir retrain.py, qui envoie le
+    résultat dans Supabase juste après (supabase_state.upsert_matches)."""
     urls = generate_football_data_urls(leagues, seasons)
     print(f"Téléchargement de {len(urls)} fichiers depuis football-data.co.uk...")
 
@@ -109,37 +110,34 @@ def download_historical_data(
         )
 
     combined = pd.concat(frames, ignore_index=True)
-    combined = combined.sort_values("Date").reset_index(drop=True)
-
-    if save:
-        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        combined.to_csv(config.HISTORICAL_DATA_PATH, index=False)
-        print(f"{len(combined)} matchs sauvegardés dans {config.HISTORICAL_DATA_PATH}")
-
-    return combined
-
-
-def load_historical_data(force_refresh: bool = False) -> pd.DataFrame:
-    """Charge data/historical_odds.csv s'il existe déjà, sinon télécharge tout."""
-    if not force_refresh and config.HISTORICAL_DATA_PATH.exists():
-        df = pd.read_csv(config.HISTORICAL_DATA_PATH, parse_dates=["Date"])
-        print(f"Historique chargé depuis le cache local ({len(df)} matchs).")
-        return df
-    return download_historical_data()
+    return combined.sort_values("Date").reset_index(drop=True)
 
 
 def _load_sample_upcoming_matches() -> list[dict]:
+    """⚠️ Les noms d'équipes dans le fichier sample doivent déjà être à la
+    convention football-data.co.uk (ex: "Man City", pas "Manchester City")
+    — ce chemin ne passe JAMAIS par team_names.normalize_team_name (à la
+    différence du vrai appel API), puisqu'il est censé fournir des données
+    déjà "propres". Un nom incohérent avec l'historique fait silencieusement
+    échouer le calcul des features pour ce match (aucune erreur, juste un
+    journal "Historique insuffisant")."""
     with open(config.UPCOMING_SAMPLE_PATH, encoding="utf-8") as f:
-        return json.load(f)
+        matches = json.load(f)
+    # JSON n'autorise que des clés string ; les lignes de totals doivent être
+    # des float pour matcher config.TOTAL_GOALS_LINES (voir src.markets).
+    for match in matches:
+        totals = match.get("odds", {}).get("totals", {})
+        match["odds"]["totals"] = {float(line): value for line, value in totals.items()}
+    return matches
 
 
 def fetch_upcoming_matches(
     leagues: Iterable[str] | None = None,
     known_team_names: dict[str, list[str]] | None = None,
     regions: str = "eu",
-    markets: str = "h2h",
-) -> list[dict]:
-    """Récupère les matchs à venir (toutes ligues suivies) avec leurs cotes 1X2.
+    markets: str = "h2h,totals",
+) -> tuple[list[dict], int | None]:
+    """Récupère les matchs à venir (toutes ligues suivies) avec leurs cotes.
 
     - Si ODDS_API_KEY est présente dans l'environnement, interroge The Odds API
       pour chaque ligue de `leagues` (codes football-data.co.uk, ex. "E0"/"F1").
@@ -149,17 +147,24 @@ def fetch_upcoming_matches(
     - Sinon (ou en cas d'erreur réseau/clé invalide/quota dépassé), retombe sur
       data/upcoming_matches_sample.json pour que le bot tourne quand même.
 
-    Retourne une liste de dicts normalisés :
-      {league, home_team, away_team, commence_time, odds_h, odds_d, odds_a}
+    Retourne (matches, credits_restants) :
+      - matches : [{league, home_team, away_team, commence_time,
+        "odds": {"h2h": {"H":o,"D":o,"A":o}, "totals": {0.5:{"Over":o,"Under":o}, ...}}}]
+        (une ligne "totals" absente du marché renvoyé par l'API n'apparaît
+        pas dans le dict — voir src.markets pour le repli sur cote estimée)
+      - credits_restants : le plus petit x-requests-remaining vu dans les
+        réponses (None si mode sample, ou si l'en-tête est absent) — voir
+        config.ODDS_API_MIN_REMAINING_CREDITS.
     """
     leagues = list(leagues) if leagues is not None else list(config.LEAGUES.keys())
     known_team_names = known_team_names or {}
 
     if not config.ODDS_API_KEY:
         print("Pas de ODDS_API_KEY configurée : utilisation des matchs d'exemple (sample).")
-        return _load_sample_upcoming_matches()
+        return _load_sample_upcoming_matches(), None
 
     matches = []
+    remaining = None
     for league in leagues:
         sport_key = config.ODDS_API_SPORT_KEYS.get(league, league)
         url = f"{config.ODDS_API_BASE_URL}/sports/{sport_key}/odds"
@@ -173,6 +178,7 @@ def fetch_upcoming_matches(
             response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             events = response.json()
+            remaining = _track_remaining_credits(response, remaining)
         except (requests.RequestException, ValueError) as exc:
             print(f"Échec de l'appel à The Odds API pour {league} ({exc}), ligue ignorée.")
             continue
@@ -188,33 +194,35 @@ def fetch_upcoming_matches(
                 "home_team": team_names.normalize_team_name(raw_home, known),
                 "away_team": team_names.normalize_team_name(raw_away, known),
                 "commence_time": event.get("commence_time"),
-                "odds_h": odds_h,
-                "odds_d": odds_d,
-                "odds_a": odds_a,
+                "odds": {
+                    "h2h": {"H": odds_h, "D": odds_d, "A": odds_a},
+                    "totals": _extract_totals_odds(event),
+                },
             })
 
     if not matches:
         print("The Odds API n'a renvoyé aucun match exploitable, repli sur les matchs d'exemple.")
-        return _load_sample_upcoming_matches()
+        return _load_sample_upcoming_matches(), remaining
 
-    return matches
+    return matches, remaining
 
 
-def fetch_scores(leagues: Iterable[str] | None = None, days_from: int = 3) -> list[dict]:
+def fetch_scores(leagues: Iterable[str] | None = None, days_from: int = 3) -> tuple[list[dict], int | None]:
     """Récupère les scores des matchs récents/en cours (pour régler les paris en
-    attente). Nécessite ODDS_API_KEY — retourne [] sans clé (les paris restent
-    en attente jusqu'à ce qu'une clé soit configurée ; voir README).
+    attente). Nécessite ODDS_API_KEY — retourne ([], None) sans clé (les paris
+    restent en attente jusqu'à ce qu'une clé soit configurée ; voir README).
 
-    Retourne une liste de dicts : {league, home_team, away_team, commence_time,
-    completed, home_score, away_score} (scores en int, ou None si pas encore
-    joué/terminé). Les noms d'équipes NE sont PAS normalisés ici : c'est fait
-    par l'appelant, qui connaît les noms déjà en base pour ce match (issus de
-    fetch_upcoming_matches au moment de la mise)."""
+    Retourne (events, credits_restants) où events = [{league, home_team,
+    away_team, commence_time, completed, home_score, away_score}] (scores en
+    int, ou None si pas encore joué/terminé). Les noms d'équipes NE sont PAS
+    normalisés ici : c'est fait par l'appelant, qui connaît les noms déjà en
+    base pour ce match (issus de fetch_upcoming_matches au moment de la mise)."""
     if not config.ODDS_API_KEY:
-        return []
+        return [], None
 
     leagues = list(leagues) if leagues is not None else list(config.LEAGUES.keys())
     results = []
+    remaining = None
     for league in leagues:
         sport_key = config.ODDS_API_SPORT_KEYS.get(league, league)
         url = f"{config.ODDS_API_BASE_URL}/sports/{sport_key}/scores"
@@ -223,6 +231,7 @@ def fetch_scores(leagues: Iterable[str] | None = None, days_from: int = 3) -> li
             response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             events = response.json()
+            remaining = _track_remaining_credits(response, remaining)
         except (requests.RequestException, ValueError) as exc:
             print(f"Échec de l'appel scores The Odds API pour {league} ({exc}), ligue ignorée.")
             continue
@@ -244,7 +253,21 @@ def fetch_scores(leagues: Iterable[str] | None = None, days_from: int = 3) -> li
                 "away_score": away_score,
             })
 
-    return results
+    return results, remaining
+
+
+def _track_remaining_credits(response, current_min: int | None) -> int | None:
+    """Lit x-requests-remaining (en-tête renvoyé par The Odds API à chaque
+    appel) et garde le minimum vu — filet de sécurité indépendant de tout
+    calcul de coût par marché (voir config.ODDS_API_MIN_REMAINING_CREDITS)."""
+    header = response.headers.get("x-requests-remaining")
+    if header is None:
+        return current_min
+    try:
+        value = int(header)
+    except ValueError:
+        return current_min
+    return value if current_min is None else min(current_min, value)
 
 
 def _safe_int(value) -> int | None:
@@ -274,3 +297,28 @@ def _extract_h2h_odds(event: dict, home_team: str, away_team: str):
 
     odds_d = float(np.mean(draw_prices)) if draw_prices else None
     return float(np.mean(home_prices)), odds_d, float(np.mean(away_prices))
+
+
+def _extract_totals_odds(event: dict) -> dict:
+    """{ligne: {"Over":cote,"Under":cote}} pour les lignes de
+    config.TOTAL_GOALS_LINES trouvées dans le marché "totals" de
+    l'événement (moyenne entre bookmakers). Une ligne absente n'apparaît
+    pas dans le dict retourné — src.markets retombe alors sur une cote
+    estimée pour cette ligne précise, pas pour tout le match."""
+    prices: dict[float, dict[str, list[float]]] = {}
+    for bookmaker in event.get("bookmakers", []):
+        for market in bookmaker.get("markets", []):
+            if market.get("key") != "totals":
+                continue
+            for outcome in market.get("outcomes", []):
+                line, name, price = outcome.get("point"), outcome.get("name"), outcome.get("price")
+                if line is None or name not in ("Over", "Under") or price is None:
+                    continue
+                prices.setdefault(line, {"Over": [], "Under": []})[name].append(price)
+
+    totals = {}
+    for line in config.TOTAL_GOALS_LINES:
+        entry = prices.get(line)
+        if entry and entry["Over"] and entry["Under"]:
+            totals[line] = {"Over": float(np.mean(entry["Over"])), "Under": float(np.mean(entry["Under"]))}
+    return totals

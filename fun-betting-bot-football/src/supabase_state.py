@@ -70,13 +70,17 @@ def load_state(initial_bankroll: float) -> dict:
     rows = resp.json()
 
     if not rows:
-        return {"bankroll": initial_bankroll, "last_odds_fetch_at": None, "last_scores_fetch_at": None}
+        return {
+            "bankroll": initial_bankroll, "last_odds_fetch_at": None,
+            "last_scores_fetch_at": None, "odds_api_remaining": None,
+        }
 
     row = rows[0]
     return {
         "bankroll": row["bankroll"],
         "last_odds_fetch_at": row.get("last_odds_fetch_at"),
         "last_scores_fetch_at": row.get("last_scores_fetch_at"),
+        "odds_api_remaining": row.get("odds_api_remaining"),
     }
 
 
@@ -88,6 +92,7 @@ def save_state(state: dict) -> None:
         "bankroll": state["bankroll"],
         "last_odds_fetch_at": state.get("last_odds_fetch_at"),
         "last_scores_fetch_at": state.get("last_scores_fetch_at"),
+        "odds_api_remaining": state.get("odds_api_remaining"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     headers = _headers()
@@ -215,11 +220,16 @@ def load_model() -> dict:
 
 
 # --------------------------------------------------------------------------
-# Paris (footballbot_bets)
+# Paris — footballbot_bets (niveau ticket : pari seul ou combiné jusqu'à 3
+# jambes) + footballbot_bet_legs (une ligne par match/sélection dans le
+# ticket). Voir src/strategy.build_tickets pour la construction des tickets.
 # --------------------------------------------------------------------------
 
-def bet_exists(home_team: str, away_team: str, commence_time: str) -> bool:
-    url = f"{_base_url()}/{_table('bets')}"
+def leg_exists(home_team: str, away_team: str, commence_time: str) -> bool:
+    """Vrai si ce match fait déjà partie d'un ticket (peu importe lequel,
+    peu importe son statut) — évite de parier deux fois sur le même match
+    d'un cycle à l'autre."""
+    url = f"{_base_url()}/{_table('bet_legs')}"
     resp = requests.get(
         url, headers=_headers(),
         params={
@@ -232,23 +242,66 @@ def bet_exists(home_team: str, away_team: str, commence_time: str) -> bool:
     return len(resp.json()) > 0
 
 
-def insert_bet(bet: dict) -> None:
+def insert_ticket(stake: float, prob: float, odds: float, ev: float, legs: list) -> int:
+    """Crée un ticket (pari seul si len(legs)==1, combiné sinon) et ses
+    jambes. `legs` : [{league, home_team, away_team, commence_time, market,
+    selection, prob, odds}, ...]. Retourne l'id du ticket créé."""
     url = f"{_base_url()}/{_table('bets')}"
-    resp = requests.post(url, headers=_headers(), json=bet, timeout=15)
+    headers = _headers()
+    headers["Prefer"] = "return=representation"
+    payload = {"num_legs": len(legs), "prob": prob, "odds": odds, "ev": ev, "stake": stake}
+    resp = requests.post(url, headers=headers, json=payload, timeout=15)
     resp.raise_for_status()
+    bet_id = resp.json()[0]["id"]
+
+    legs_url = f"{_base_url()}/{_table('bet_legs')}"
+    legs_payload = [{**leg, "bet_id": bet_id} for leg in legs]
+    resp = requests.post(legs_url, headers=_headers(), json=legs_payload, timeout=15)
+    resp.raise_for_status()
+    return bet_id
 
 
-def get_pending_bets() -> list:
-    url = f"{_base_url()}/{_table('bets')}"
+def get_pending_legs() -> list:
+    """Toutes les jambes en attente, tous tickets confondus — pour savoir
+    quels matchs regarder au règlement (voir web_app._settle_pending_bets)."""
+    url = f"{_base_url()}/{_table('bet_legs')}"
     resp = requests.get(
         url, headers=_headers(),
-        params={"status": "eq.pending", "select": "*"}, timeout=15,
+        params={"result": "eq.pending", "select": "*"}, timeout=15,
     )
     resp.raise_for_status()
     return resp.json()
 
 
-def settle_bet(bet_id: int, status: str, pnl: float, bankroll_after: float) -> None:
+def update_leg_result(leg_id: int, result: str) -> None:
+    url = f"{_base_url()}/{_table('bet_legs')}"
+    payload = {"result": result, "settled_at": datetime.now(timezone.utc).isoformat()}
+    resp = requests.patch(url, headers=_headers(), params={"id": f"eq.{leg_id}"}, json=payload, timeout=15)
+    resp.raise_for_status()
+
+
+def get_ticket(bet_id: int) -> dict:
+    url = f"{_base_url()}/{_table('bets')}"
+    resp = requests.get(
+        url, headers=_headers(),
+        params={"id": f"eq.{bet_id}", "select": "*"}, timeout=15,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0] if rows else {}
+
+
+def get_ticket_legs(bet_id: int) -> list:
+    url = f"{_base_url()}/{_table('bet_legs')}"
+    resp = requests.get(
+        url, headers=_headers(),
+        params={"bet_id": f"eq.{bet_id}", "select": "*"}, timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def finalize_ticket(bet_id: int, status: str, pnl: float, bankroll_after: float) -> None:
     url = f"{_base_url()}/{_table('bets')}"
     payload = {
         "status": status, "pnl": pnl, "bankroll_after": bankroll_after,
@@ -258,18 +311,35 @@ def settle_bet(bet_id: int, status: str, pnl: float, bankroll_after: float) -> N
     resp.raise_for_status()
 
 
-def get_recent_bets(limit: int = 10) -> list:
+def get_pending_ticket_ids() -> list:
     url = f"{_base_url()}/{_table('bets')}"
     resp = requests.get(
         url, headers=_headers(),
-        params={"select": "*", "order": "ts.desc", "limit": str(limit)}, timeout=15,
+        params={"status": "eq.pending", "select": "id"}, timeout=15,
     )
     resp.raise_for_status()
-    return resp.json()
+    return [row["id"] for row in resp.json()]
 
 
-def get_settled_bets_chronological(limit: int = 300) -> list:
-    """Paris réglés (won/lost), du plus ancien au plus récent — matière
+def get_recent_tickets(limit: int = 10) -> list:
+    """Tickets récents AVEC leurs jambes (embedding PostgREST via la
+    relation bet_id), pour l'affichage sur la page de statut."""
+    legs_table = _table("bet_legs")
+    url = f"{_base_url()}/{_table('bets')}"
+    resp = requests.get(
+        url, headers=_headers(),
+        params={"select": f"*,{legs_table}(*)", "order": "ts.desc", "limit": str(limit)},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    for row in rows:
+        row["legs"] = row.pop(legs_table, [])
+    return rows
+
+
+def get_settled_tickets_chronological(limit: int = 300) -> list:
+    """Tickets réglés (won/lost), du plus ancien au plus récent — matière
     première de la courbe de bankroll de la page de statut. Best-effort :
     [] si Supabase est injoignable plutôt que de casser la page."""
     try:

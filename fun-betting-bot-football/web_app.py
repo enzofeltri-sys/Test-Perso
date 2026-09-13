@@ -38,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, jsonify, request
 
 import alerts
-from src import config, data_loader, features, model as model_module, strategy, supabase_state
+from src import config, data_loader, features, markets, model as model_module, strategy, supabase_state
 from src.team_names import normalize_team_name
 
 app = Flask(__name__)
@@ -64,22 +64,51 @@ def _hours_since(iso_value: str | None) -> float | None:
     return (_now() - dt).total_seconds() / 3600
 
 
+def _quota_exhausted(state: dict) -> bool:
+    remaining = state.get("odds_api_remaining")
+    return remaining is not None and remaining < config.ODDS_API_MIN_REMAINING_CREDITS
+
+
+def _leg_won(leg: dict, result: dict) -> bool:
+    if leg["market"] == "1x2":
+        return leg["selection"] == result["actual_result"]
+    if leg["market"] == "totals":
+        direction, line_str = leg["selection"].split()
+        return (result["total_goals"] > float(line_str)) if direction == "Over" else (result["total_goals"] < float(line_str))
+    return False
+
+
 def _settle_pending_bets(state: dict, errors: list) -> int:
-    """Règle les paris en attente dont le match est terminé. Best-effort par
-    conception : une erreur ici ne doit jamais empêcher le placement de
-    nouveaux paris juste après."""
-    pending = supabase_state.get_pending_bets()
-    if not pending:
+    """Règle les tickets (seuls ou combinés) dont TOUTES les jambes ont un
+    résultat connu. Une jambe est réglée dès que son match est terminé ;
+    un ticket combiné reste en attente tant qu'il lui manque au moins une
+    jambe. Best-effort par conception : une erreur ici ne doit jamais
+    empêcher le placement de nouveaux paris juste après."""
+    pending_legs = supabase_state.get_pending_legs()
+    if not pending_legs:
         return 0
 
     hours_since = _hours_since(state.get("last_scores_fetch_at"))
     if hours_since is not None and hours_since < config.SCORES_FETCH_INTERVAL_HOURS:
         return 0
 
-    settled = 0
+    if _quota_exhausted(state):
+        supabase_state.log_journal_entry(
+            "bot",
+            f"Quota The Odds API presque épuisé ({state['odds_api_remaining']} restants) — "
+            "règlement des paris en attente reporté.",
+            {"event": "quota_low"},
+        )
+        state["last_scores_fetch_at"] = _now().isoformat()
+        return 0
+
+    settled_tickets = 0
     try:
         known = supabase_state.get_known_team_names()
-        events = data_loader.fetch_scores(leagues=list(config.LEAGUES.keys()))
+        events, api_remaining = data_loader.fetch_scores(leagues=list(config.LEAGUES.keys()))
+        if api_remaining is not None:
+            state["odds_api_remaining"] = api_remaining
+
         results_by_key = {}
         for event in events:
             if not event["completed"] or event["home_score"] is None or event["away_score"] is None:
@@ -87,49 +116,81 @@ def _settle_pending_bets(state: dict, errors: list) -> int:
             league_known = known.get(event["league"], [])
             home = normalize_team_name(event["home_team"], league_known)
             away = normalize_team_name(event["away_team"], league_known)
-            results_by_key[(event["league"], home, away)] = event
-
-        now = _now()
-        for bet in pending:
-            commence = _parse_iso(bet.get("commence_time"))
-            if commence is None or now - commence < timedelta(hours=config.RESULT_SETTLE_BUFFER_HOURS):
-                continue
-
-            event = results_by_key.get((bet["league"], bet["home_team"], bet["away_team"]))
-            if event is None:
-                continue
-
             if event["home_score"] > event["away_score"]:
                 actual = "H"
             elif event["away_score"] > event["home_score"]:
                 actual = "A"
             else:
                 actual = "D"
+            results_by_key[(event["league"], home, away)] = {
+                "actual_result": actual, "total_goals": event["home_score"] + event["away_score"],
+            }
 
-            won = bet["selection"] == actual
-            pnl = bet["stake"] * (bet["odds"] - 1) if won else -bet["stake"]
-            payout = bet["stake"] * bet["odds"] if won else 0.0
+        now = _now()
+        touched_bet_ids = set()
+        for leg in pending_legs:
+            commence = _parse_iso(leg.get("commence_time"))
+            if commence is None or now - commence < timedelta(hours=config.RESULT_SETTLE_BUFFER_HOURS):
+                continue
+            result = results_by_key.get((leg["league"], leg["home_team"], leg["away_team"]))
+            if result is None:
+                continue
+            supabase_state.update_leg_result(leg["id"], "won" if _leg_won(leg, result) else "lost")
+            touched_bet_ids.add(leg["bet_id"])
+
+        for bet_id in touched_bet_ids:
+            legs = supabase_state.get_ticket_legs(bet_id)
+            if any(leg["result"] == "pending" for leg in legs):
+                continue
+
+            ticket = supabase_state.get_ticket(bet_id)
+            won = all(leg["result"] == "won" for leg in legs)
+            pnl = ticket["stake"] * (ticket["odds"] - 1) if won else -ticket["stake"]
+            payout = ticket["stake"] * ticket["odds"] if won else 0.0
             state["bankroll"] += payout
+            supabase_state.finalize_ticket(bet_id, "won" if won else "lost", round(pnl, 2), round(state["bankroll"], 2))
 
-            supabase_state.settle_bet(bet["id"], "won" if won else "lost", round(pnl, 2), round(state["bankroll"], 2))
+            legs_desc = ", ".join(f"{leg['home_team']}-{leg['away_team']}:{leg['selection']}" for leg in legs)
+            kind = "combiné" if len(legs) > 1 else "pari"
             supabase_state.log_journal_entry(
                 "bot",
-                f"Pari réglé : {bet['home_team']} vs {bet['away_team']} — {bet['selection']} @ {bet['odds']} "
-                f"— {'gagné' if won else 'perdu'} ({pnl:+.2f}). Bankroll : {state['bankroll']:.2f}.",
+                f"Ticket réglé ({kind}, {len(legs)} jambe(s)) : {legs_desc} — "
+                f"{'gagné' if won else 'perdu'} ({pnl:+.2f}). Bankroll : {state['bankroll']:.2f}.",
                 {"event": "settlement"},
             )
-            settled += 1
+            settled_tickets += 1
 
         state["last_scores_fetch_at"] = _now().isoformat()
     except Exception as exc:
         errors.append(f"settlement: {exc}")
         supabase_state.log_error(f"settlement: {exc}")
 
-    return settled
+    return settled_tickets
+
+
+def _describe_match_markets(match: dict, probs: dict, candidates: list) -> str:
+    """Résumé compact de tous les marchés d'un match, pour le journal —
+    permet de comprendre gains/pertes même sur les marchés jamais pariés
+    (double chance, résultat+buts : toujours estimés, voir src/markets)."""
+    def fmt(c):
+        tag = " (estimé)" if c["is_estimated"] else ""
+        return f"{c['selection']}@{c['odds']:.2f}({c['prob']:.0%}){tag}"
+
+    by_market = {}
+    for c in candidates:
+        by_market.setdefault(c["market"], []).append(c)
+
+    parts = [f"{match['home_team']} vs {match['away_team']} ({match['league']})"]
+    labels = {"1x2": "1X2", "double_chance": "Double chance", "totals": "Buts", "result_and_goals": "Résultat+buts"}
+    for market, label in labels.items():
+        if market in by_market:
+            parts.append(f"{label}: " + " ".join(fmt(c) for c in by_market[market]))
+    return " | ".join(parts)
 
 
 def _place_new_bets(state: dict, errors: list) -> int:
-    """Place de nouveaux paris sur les matchs à venir si l'EV le justifie.
+    """Place de nouveaux tickets (seuls ou combinés jusqu'à 3 matchs) sur
+    les matchs à venir si l'EV le justifie — voir src/strategy.build_tickets.
     Ne fait rien (et ne consomme aucun crédit API) tant que le throttle
     ODDS_FETCH_INTERVAL_HOURS n'est pas écoulé."""
     hours_since = _hours_since(state.get("last_odds_fetch_at"))
@@ -149,7 +210,17 @@ def _place_new_bets(state: dict, errors: list) -> int:
         state["last_odds_fetch_at"] = _now().isoformat()
         return 0
 
-    placed = 0
+    if _quota_exhausted(state):
+        supabase_state.log_journal_entry(
+            "bot",
+            f"Quota The Odds API presque épuisé ({state['odds_api_remaining']} restants) — "
+            "pas de nouveaux matchs récupérés ce cycle.",
+            {"event": "quota_low"},
+        )
+        state["last_odds_fetch_at"] = _now().isoformat()
+        return 0
+
+    tickets_placed = 0
     try:
         model_row = supabase_state.load_model()
         if not model_row:
@@ -164,15 +235,20 @@ def _place_new_bets(state: dict, errors: list) -> int:
         trained_model = model_module.deserialize_model(model_row["model_b64"])
         history_df = supabase_state.get_all_matches()
         known = supabase_state.get_known_team_names()
-        upcoming = data_loader.fetch_upcoming_matches(
+        upcoming, api_remaining = data_loader.fetch_upcoming_matches(
             leagues=list(config.LEAGUES.keys()), known_team_names=known,
         )
+        if api_remaining is not None:
+            state["odds_api_remaining"] = api_remaining
 
+        round_matches = []
         for match in upcoming:
-            if supabase_state.bet_exists(match["home_team"], match["away_team"], match["commence_time"]):
+            if supabase_state.leg_exists(match["home_team"], match["away_team"], match["commence_time"]):
                 continue
 
-            X_match = features.build_features_for_match(history_df, match["home_team"], match["away_team"])
+            X_match = features.build_features_for_match(
+                history_df, match["home_team"], match["away_team"], match_date=match["commence_time"],
+            )
             if X_match is None:
                 supabase_state.log_journal_entry(
                     "bot",
@@ -181,57 +257,63 @@ def _place_new_bets(state: dict, errors: list) -> int:
                 )
                 continue
 
-            probs = model_module.predict_proba(trained_model, X_match).iloc[0].to_dict()
-            odds = {"H": match["odds_h"], "D": match["odds_d"], "A": match["odds_a"]}
-            bet = strategy.select_bet(probs, odds, config.EV_THRESHOLD)
-            if bet is None:
-                continue
+            lambda_home, lambda_away = model_module.predict_goal_rates(trained_model, X_match)
+            probs = markets.market_probabilities(lambda_home[0], lambda_away[0])
+            candidates = markets.build_candidates(probs, match["odds"])
 
-            stake = strategy.compute_stake(state["bankroll"], bet["prob"], bet["odds"])
+            supabase_state.log_journal_entry(
+                "bot", _describe_match_markets(match, probs, candidates), {"event": "match_preview"},
+            )
+            round_matches.append({"match": match, "candidates": candidates})
+
+        for ticket in strategy.build_tickets(round_matches):
+            stake = strategy.compute_stake(state["bankroll"], ticket["prob"], ticket["odds"])
             if stake <= 0:
                 continue
 
             state["bankroll"] -= stake
-            supabase_state.insert_bet({
-                "commence_time": match["commence_time"],
-                "league": match["league"],
-                "home_team": match["home_team"],
-                "away_team": match["away_team"],
-                "market": "h2h",
-                "selection": bet["selection"],
-                "prob": round(bet["prob"], 4),
-                "odds": bet["odds"],
-                "stake": stake,
-                "status": "pending",
-            })
+            legs_payload = [{
+                "league": leg["match"]["league"],
+                "home_team": leg["match"]["home_team"],
+                "away_team": leg["match"]["away_team"],
+                "commence_time": leg["match"]["commence_time"],
+                "market": leg["market"],
+                "selection": leg["selection"],
+                "prob": round(leg["prob"], 4),
+                "odds": leg["odds"],
+            } for leg in ticket["legs"]]
+            supabase_state.insert_ticket(stake, round(ticket["prob"], 6), ticket["odds"], round(ticket["ev"], 4), legs_payload)
+
+            kind = "combiné" if len(ticket["legs"]) > 1 else "pari"
+            legs_desc = ", ".join(f"{leg['match']['home_team']}-{leg['match']['away_team']}:{leg['selection']}@{leg['odds']:.2f}" for leg in ticket["legs"])
             supabase_state.log_journal_entry(
                 "bot",
-                f"Nouveau pari : {match['home_team']} vs {match['away_team']} — {bet['selection']} @ {bet['odds']} "
-                f"(prob {bet['prob']:.0%}, EV {bet['ev']:+.1%}), mise {stake:.2f}.",
+                f"Nouveau {kind} ({len(ticket['legs'])} jambe(s)) : {legs_desc} — "
+                f"prob {ticket['prob']:.1%}, cote {ticket['odds']:.2f}, EV {ticket['ev']:+.1%}, mise {stake:.2f}.",
                 {"event": "new_bet"},
             )
-            placed += 1
+            tickets_placed += 1
 
         state["last_odds_fetch_at"] = _now().isoformat()
     except Exception as exc:
         errors.append(f"placement: {exc}")
         supabase_state.log_error(f"placement: {exc}")
 
-    return placed
+    return tickets_placed
 
 
 def run_tick() -> dict:
     errors = []
     state = supabase_state.load_state(config.INITIAL_BANKROLL)
 
-    bets_settled = _settle_pending_bets(state, errors)
-    bets_placed = _place_new_bets(state, errors)
+    tickets_settled = _settle_pending_bets(state, errors)
+    tickets_placed = _place_new_bets(state, errors)
 
     supabase_state.save_state(state)
 
     return {
-        "bets_placed": bets_placed,
-        "bets_settled": bets_settled,
+        "tickets_placed": tickets_placed,
+        "tickets_settled": tickets_settled,
         "bankroll": round(state["bankroll"], 2),
         "errors": errors,
     }
@@ -265,13 +347,13 @@ def status():
     except Exception:
         pass
 
-    recent_bets = _safe_call(supabase_state.get_recent_bets, 15, default=[])
-    settled_bets = _safe_call(supabase_state.get_settled_bets_chronological, 300, default=[])
-    journal = _safe_call(supabase_state.get_recent_journal, 15, default=[])
+    recent_tickets = _safe_call(supabase_state.get_recent_tickets, 15, default=[])
+    settled_tickets = _safe_call(supabase_state.get_settled_tickets_chronological, 300, default=[])
+    journal = _safe_call(supabase_state.get_recent_journal, 40, default=[])
     errors = _safe_call(supabase_state.get_recent_errors, 5, default=[])
     model_row = _safe_call(supabase_state.load_model, default={})
 
-    return _render_status_page(bankroll, recent_bets, settled_bets, journal, errors, model_row)
+    return _render_status_page(bankroll, recent_tickets, settled_tickets, journal, errors, model_row)
 
 
 def _safe_call(fn, *args, default=None):
@@ -407,7 +489,7 @@ def _build_bankroll_chart_svg(points: list) -> str:
     return "".join(parts)
 
 
-def _render_status_page(bankroll, recent_bets, settled_bets, journal, errors, model_row) -> str:
+def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, errors, model_row) -> str:
     label = os.environ.get("BOT_LABEL") or "bot de paris football virtuels"
     metrics = (model_row or {}).get("backtest_metrics") or {}
     trained_at = (model_row or {}).get("trained_at") or None
@@ -420,28 +502,55 @@ def _render_status_page(bankroll, recent_bets, settled_bets, journal, errors, mo
         return dt.strftime("%d/%m %H:%M") if dt else "—"
 
     chart_points = []
-    for b in settled_bets:
-        dt = _parse_iso(b.get("settled_at"))
-        if dt is not None and b.get("bankroll_after") is not None:
-            chart_points.append((dt, float(b["bankroll_after"])))
+    for t in settled_tickets:
+        dt = _parse_iso(t.get("settled_at"))
+        if dt is not None and t.get("bankroll_after") is not None:
+            chart_points.append((dt, float(t["bankroll_after"])))
     chart_svg = _build_bankroll_chart_svg(chart_points)
 
     pnl_since_start = bankroll - config.INITIAL_BANKROLL
     roi_live_pct = pnl_since_start / config.INITIAL_BANKROLL * 100
 
-    bet_cards = "".join(
-        f'<div class="bet-row"><div class="bet-match">{esc(b.get("home_team"))} – {esc(b.get("away_team"))} '
-        f'<span class="bet-league">{esc(b.get("league"))}</span></div>'
-        f'<div class="bet-meta"><span class="pill pill-{esc(b.get("status"))}">{esc(b.get("selection"))} @ {esc(b.get("odds"))}</span>'
-        f'<span class="mono">mise {esc(b.get("stake"))}</span>'
-        f'<span class="mono">{fmt_ts(b.get("commence_time"))}</span></div></div>'
-        for b in recent_bets
-    ) or '<p class="empty">Aucun pari pour l\'instant.</p>'
+    def ticket_card(t) -> str:
+        legs = sorted(t.get("legs") or [], key=lambda leg: leg.get("commence_time") or "")
+        kind = "Combiné" if len(legs) > 1 else "Simple"
+        legs_html = "".join(
+            f'<div class="leg"><span class="leg-match">{esc(leg.get("home_team"))} – {esc(leg.get("away_team"))} '
+            f'<span class="bet-league">{esc(leg.get("league"))}</span></span>'
+            f'<span class="pill pill-{esc(leg.get("result"))}">{esc(leg.get("selection"))} @ {esc(leg.get("odds"))}</span></div>'
+            for leg in legs
+        )
+        return (
+            f'<div class="bet-row"><div class="bet-match">{kind} · {len(legs)} match(s) '
+            f'<span class="bet-league">cote {esc(t.get("odds"))} · prob {float(t.get("prob") or 0):.0%}</span></div>'
+            f'{legs_html}'
+            f'<div class="bet-meta"><span class="pill pill-{esc(t.get("status"))}">{esc(t.get("status"))}</span>'
+            f'<span class="mono">mise {esc(t.get("stake"))}</span>'
+            f'<span class="mono">{esc(t.get("pnl")) if t.get("pnl") is not None else ""}</span></div></div>'
+        )
+
+    bet_cards = "".join(ticket_card(t) for t in recent_tickets) or '<p class="empty">Aucun pari pour l\'instant.</p>'
+
+    is_preview = lambda j: (j.get("data") or {}).get("event") == "match_preview"
+    main_journal = [j for j in journal if not is_preview(j)][:12]
+    preview_journal = [j for j in journal if is_preview(j)][:10]
 
     journal_items = "".join(
         f'<li><span class="mono">{fmt_ts(j.get("ts"))}</span> {esc(j.get("message"))}</li>'
-        for j in journal[:8]
+        for j in main_journal
     ) or '<li class="empty">Rien pour l\'instant.</li>'
+
+    preview_items = "".join(
+        f'<li><span class="mono">{fmt_ts(j.get("ts"))}</span> {esc(j.get("message"))}</li>'
+        for j in preview_journal
+    )
+    preview_block = (
+        f'<div class="card"><h2>Marchés examinés récemment</h2>'
+        f'<p class="sub">Toutes les probabilités/cotes vues par le bot, y compris les marchés jamais '
+        f'pariés (double chance, résultat+buts : toujours estimés — voir README).</p>'
+        f'<ul class="list">{preview_items}</ul></div>'
+        if preview_items else ""
+    )
 
     errors_block = ""
     if errors:
@@ -457,8 +566,9 @@ def _render_status_page(bankroll, recent_bets, settled_bets, journal, errors, mo
     trained_line = (
         f'Entraîné le {esc(trained_at)[:16].replace("T", " ")} UTC — backtest : '
         f'ROI {esc(metrics.get("roi_pct"))}% · yield {esc(metrics.get("yield_pct"))}% · '
-        f'{esc(metrics.get("num_bets"))} paris · win rate {esc(metrics.get("win_rate"))}% · '
-        f'drawdown max {esc(metrics.get("max_drawdown_pct"))}%'
+        f'{esc(metrics.get("num_bets"))} tickets · win rate {esc(metrics.get("win_rate"))}% · '
+        f'drawdown max {esc(metrics.get("max_drawdown_pct"))}% '
+        f'<span class="sub">(backtest 1X2 uniquement, pas de cotes over/under historiques — voir README)</span>'
         if trained_at else
         "Pas encore de modèle entraîné — voir DEPLOIEMENT.md."
     )
@@ -510,6 +620,8 @@ h2{{ font-size:0.92rem; font-weight:500; margin-bottom:12px; }}
 .bet-match{{ font-size:0.92rem; font-weight:500; margin-bottom:4px; }}
 .bet-league{{ font-size:0.7rem; color:var(--text-faint); font-weight:400; }}
 .bet-meta{{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:0.78rem; color:var(--text-muted); }}
+.leg{{ display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:0.82rem; padding:4px 0; }}
+.leg-match{{ color:var(--text-muted); }}
 .pill{{ padding:2px 8px; border-radius:999px; font-size:0.72rem; font-weight:500; }}
 .pill-won{{ background:var(--pill-won-bg); color:var(--pill-won-text); }}
 .pill-lost{{ background:var(--pill-lost-bg); color:var(--pill-lost-text); }}
@@ -542,7 +654,7 @@ footer{{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align
   </div>
 
   <div class="card">
-    <h2>Derniers paris</h2>
+    <h2>Derniers tickets</h2>
     {bet_cards}
   </div>
 
@@ -550,6 +662,8 @@ footer{{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align
     <h2>Journal</h2>
     <ul class="list">{journal_items}</ul>
   </div>
+
+  {preview_block}
 
   {errors_block}
 

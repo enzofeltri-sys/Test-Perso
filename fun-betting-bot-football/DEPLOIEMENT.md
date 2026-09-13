@@ -39,6 +39,7 @@ create table if not exists public.footballbot_state (
   bankroll numeric not null,
   last_odds_fetch_at timestamptz,
   last_scores_fetch_at timestamptz,
+  odds_api_remaining int,
   updated_at timestamptz not null default now()
 );
 
@@ -68,23 +69,39 @@ create table if not exists public.footballbot_model (
   trained_at timestamptz not null default now()
 );
 
+-- Un ticket = un pari seul (1 jambe) ou combiné (jusqu'à 3 jambes, voir
+-- src/strategy.build_tickets). Le détail par match vit dans bet_legs.
 create table if not exists public.footballbot_bets (
   id bigserial primary key,
   ts timestamptz not null default now(),
-  commence_time timestamptz,
-  league text not null,
-  home_team text not null,
-  away_team text not null,
-  market text not null default 'h2h',
-  selection text not null check (selection in ('H', 'D', 'A')),
+  num_legs int not null,
   prob numeric,
   odds numeric,
+  ev numeric,
   stake numeric not null,
   status text not null default 'pending' check (status in ('pending', 'won', 'lost')),
   pnl numeric,
   bankroll_after numeric,
   settled_at timestamptz
 );
+
+create table if not exists public.footballbot_bet_legs (
+  id bigserial primary key,
+  bet_id bigint not null references public.footballbot_bets(id) on delete cascade,
+  league text not null,
+  home_team text not null,
+  away_team text not null,
+  commence_time timestamptz,
+  market text not null,
+  selection text not null,
+  prob numeric,
+  odds numeric,
+  result text not null default 'pending' check (result in ('pending', 'won', 'lost')),
+  settled_at timestamptz
+);
+
+create index if not exists footballbot_bet_legs_bet_id_idx on public.footballbot_bet_legs(bet_id);
+create index if not exists footballbot_bet_legs_pending_idx on public.footballbot_bet_legs(result) where result = 'pending';
 
 create table if not exists public.footballbot_journal (
   id bigserial primary key,
@@ -104,6 +121,7 @@ alter table public.footballbot_state enable row level security;
 alter table public.footballbot_matches enable row level security;
 alter table public.footballbot_model enable row level security;
 alter table public.footballbot_bets enable row level security;
+alter table public.footballbot_bet_legs enable row level security;
 alter table public.footballbot_journal enable row level security;
 alter table public.footballbot_errors enable row level security;
 
@@ -115,11 +133,20 @@ create policy "footballbot_model_all" on public.footballbot_model
   for all to anon, authenticated using (true) with check (true);
 create policy "footballbot_bets_all" on public.footballbot_bets
   for all to anon, authenticated using (true) with check (true);
+create policy "footballbot_bet_legs_all" on public.footballbot_bet_legs
+  for all to anon, authenticated using (true) with check (true);
 create policy "footballbot_journal_all" on public.footballbot_journal
   for all to anon, authenticated using (true) with check (true);
 create policy "footballbot_errors_all" on public.footballbot_errors
   for all to anon, authenticated using (true) with check (true);
 ```
+
+⚠️ Si tu avais déjà créé les anciennes tables (schéma avant les paris
+combinés), ce bloc ne les met pas à jour automatiquement (`create table
+if not exists` ne touche pas une table existante). Le plus simple : dans
+le SQL Editor, `drop table if exists public.footballbot_bets cascade;`
+puis relance ce bloc — aucune perte de données si tu n'avais pas encore
+de paris (`select count(*) from footballbot_bets;` pour vérifier avant).
 
 Récupère ensuite, dans **Project Settings → API** :
 - l'**URL du projet** (`https://xxxx.supabase.co`)

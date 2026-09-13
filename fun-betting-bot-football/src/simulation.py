@@ -1,62 +1,73 @@
 """
-Backtest : rejoue la stratégie (modèle + EV + Kelly) sur un ensemble de
-matchs déjà joués, pour produire un rapport de performance. Utilisé par
-retrain.py (GitHub Actions) après chaque ré-entraînement hebdomadaire — la
-logique de sélection/mise est EXACTEMENT celle utilisée en direct par
-web_app.py (src/strategy.py), pour que le backtest soit représentatif.
+Backtest : rejoue la stratégie (modèle de buts Poisson + marchés + combos,
+voir src/strategy.build_tickets) sur un ensemble de matchs déjà joués,
+groupés par date (un "cycle" = tous les matchs d'une même date, comme un
+lot de matchs à venir en live), pour produire un rapport de performance.
+
+⚠️ Limite connue : football-data.co.uk (l'historique) ne fournit que des
+cotes 1X2 — aucune cote over/under historique. Le backtest ne peut donc
+valider que le marché 1X2, jamais les totals (toujours "estimés" ici
+faute de données, donc jamais sélectionnés — voir src/strategy), même si
+le bot EN LIVE peut aussi parier sur les totals quand The Odds API fournit
+une vraie cote pour le match à venir.
 """
 
 import pandas as pd
 
-from src import config, model as model_module, strategy
+from src import config, markets, model as model_module, strategy
 
-BET_LOG_COLUMNS = [
-    "date", "league", "home_team", "away_team", "selection",
-    "prob", "odds", "stake", "result", "pnl", "bankroll",
+TICKET_LOG_COLUMNS = [
+    "date", "num_legs", "legs_desc", "prob", "odds", "stake", "result", "pnl", "bankroll",
 ]
 
 
-def run_backtest(df: pd.DataFrame, X: pd.DataFrame, y: pd.Series, trained_model) -> pd.DataFrame:
-    """Simule les paris sur (X, y) dans l'ordre chronologique de df. `df` doit
-    contenir les colonnes Date, League, HomeTeam, AwayTeam, FTR, OddsH/D/A,
-    et son index doit correspondre à celui de X/y (voir features.build_features,
-    qui aligne les deux en filtrant les lignes sans historique suffisant)."""
-    probs_df = model_module.predict_proba(trained_model, X)
-    meta = df.loc[X.index].sort_values("Date")
+def run_backtest(df: pd.DataFrame, X: pd.DataFrame, y_home: pd.Series, y_away: pd.Series, trained_model: dict) -> pd.DataFrame:
+    """Simule les tickets (seuls + combinés) sur (X, y_home, y_away) dans
+    l'ordre chronologique de df, groupés par date de match."""
+    lambda_home, lambda_away = model_module.predict_goal_rates(trained_model, X)
+    meta = df.loc[X.index].copy()
+    meta["lambda_home"] = lambda_home
+    meta["lambda_away"] = lambda_away
 
     bankroll = config.INITIAL_BANKROLL
     rows = []
 
-    for idx in meta.index:
-        row = meta.loc[idx]
-        probs = probs_df.loc[idx].to_dict()
-        odds = {"H": row["OddsH"], "D": row["OddsD"], "A": row["OddsA"]}
+    for date, group in meta.groupby(meta["Date"].dt.date):
+        round_matches = []
+        for idx, row in group.iterrows():
+            probs = markets.market_probabilities(row["lambda_home"], row["lambda_away"])
+            # Pas de cotes totals historiques (voir docstring du module) :
+            # ce marché reste toujours estimé, donc jamais sélectionné.
+            real_odds = {"h2h": {"H": row["OddsH"], "D": row["OddsD"], "A": row["OddsA"]}, "totals": {}}
+            candidates = markets.build_candidates(probs, real_odds)
+            round_matches.append({
+                "match": {
+                    "league": row["League"], "home_team": row["HomeTeam"], "away_team": row["AwayTeam"],
+                    "commence_time": row["Date"].isoformat(), "_idx": idx,
+                },
+                "candidates": candidates,
+            })
 
-        bet = strategy.select_bet(probs, odds, config.EV_THRESHOLD)
-        if bet is None:
-            continue
+        for ticket in strategy.build_tickets(round_matches):
+            stake = strategy.compute_stake(bankroll, ticket["prob"], ticket["odds"])
+            if stake <= 0:
+                continue
 
-        stake = strategy.compute_stake(bankroll, bet["prob"], bet["odds"])
-        if stake <= 0:
-            continue
+            won = all(
+                leg["selection"] == meta.loc[leg["match"]["_idx"], "FTR"]
+                for leg in ticket["legs"] if leg["market"] == "1x2"
+            )
+            pnl = stake * (ticket["odds"] - 1) if won else -stake
+            bankroll += pnl
 
-        actual_result = config.CLASS_TO_RESULT[y.loc[idx]]
-        won = bet["selection"] == actual_result
-        pnl = stake * (bet["odds"] - 1) if won else -stake
-        bankroll += pnl
+            legs_desc = "; ".join(
+                f"{leg['match']['home_team']}-{leg['match']['away_team']}:{leg['selection']}@{leg['odds']:.2f}"
+                for leg in ticket["legs"]
+            )
+            rows.append({
+                "date": date, "num_legs": len(ticket["legs"]), "legs_desc": legs_desc,
+                "prob": ticket["prob"], "odds": ticket["odds"], "stake": stake,
+                "result": "won" if won else "lost", "pnl": pnl, "bankroll": bankroll,
+            })
 
-        rows.append({
-            "date": row["Date"],
-            "league": row["League"],
-            "home_team": row["HomeTeam"],
-            "away_team": row["AwayTeam"],
-            "selection": bet["selection"],
-            "prob": bet["prob"],
-            "odds": bet["odds"],
-            "stake": stake,
-            "result": "won" if won else "lost",
-            "pnl": pnl,
-            "bankroll": bankroll,
-        })
-
-    return pd.DataFrame(rows, columns=BET_LOG_COLUMNS)
+    return pd.DataFrame(rows, columns=TICKET_LOG_COLUMNS)

@@ -32,23 +32,40 @@ compris) :
    bookmakers pour la Premier League (E0) et la Ligue 1 (F1), saisons
    2018-19 à 2025-26 (`src/data_loader.py`).
 2. **Features** (`src/features.py`) : forme récente de chaque équipe sur
-   ses 5 derniers matchs (points, buts marqués/encaissés), calculée sans
-   fuite de données (uniquement les matchs *antérieurs*).
-3. **Modèle** (`src/model.py`) : régression logistique multinomiale
-   (scikit-learn) qui prédit P(victoire domicile), P(nul), P(victoire
-   extérieur). Ré-entraîné chaque semaine par `retrain.py`
-   (GitHub Actions), sur toutes les saisons sauf la plus récente (test).
-4. **Stratégie** (`src/strategy.py`) : pour chaque match à venir, calcule
-   l'espérance de valeur de chaque issue (`EV = p × cote − 1`), ne retient
-   que la meilleure si `EV > 5%`, et mise une fraction de Kelly réduite
-   (25% du Kelly plein, plafonné à 5% de la bankroll par pari).
-5. **Cotes à venir** (`src/data_loader.py`) : via
+   ses 5 derniers matchs (points, buts marqués/encaissés) + repos (jours
+   depuis le match précédent), calculées sans fuite de données (uniquement
+   les matchs *antérieurs*).
+3. **Modèle de buts** (`src/model.py`) : deux régressions de Poisson
+   (scikit-learn) qui prédisent le nombre de buts ATTENDU de chaque
+   équipe. Toutes les probabilités de marché (1X2, double chance,
+   over/under, résultat+buts) sont ensuite déduites d'une grille de
+   Poisson jointe (`src/markets.py`) — un seul modèle cohérent plutôt
+   qu'un classifieur par marché. Les probabilités du 1X2 sont en plus
+   *calibrées* pour éviter la surconfiance (voir "Un incident, une
+   correction" plus bas). Ré-entraîné chaque semaine par `retrain.py`.
+4. **Marchés** (`src/markets.py`) : 1X2, double chance (1X/X2/12),
+   over/under (0.5/1.5/2.5 buts) et résultat+buts (ex: "Domicile & +2.5
+   buts"). Seuls le 1X2 et l'over/under ont une VRAIE cote de marché (The
+   Odds API) — double chance et résultat+buts sont toujours des cotes
+   ESTIMÉES (cote équitable du modèle avec une marge bookmaker), affichées
+   pour comprendre gains/pertes mais jamais pariables : le bot ne parie
+   jamais contre sa propre estimation faute de prix de marché indépendant.
+5. **Stratégie** (`src/strategy.py`) : pour chaque match, calcule l'EV de
+   chaque sélection à cote réelle (`EV = p × cote − 1`) et garde la
+   meilleure. Les jambes dont l'EV dépasse 15% sont regroupées en
+   **paris combinés jusqu'à 3 matchs** (jamais deux sélections du même
+   match) ; les matchs restants dont l'EV dépasse 10% deviennent des
+   paris seuls. Mise = fraction de Kelly réduite (15%, plafonnée à 3% de
+   la bankroll par ticket).
+6. **Cotes à venir** (`src/data_loader.py`) : via
    [The Odds API](https://the-odds-api.com) si une clé est configurée
-   (free tier ~500 requêtes/mois), sinon via `data/upcoming_matches_sample.json`
-   (quelques matchs fictifs, pour que le bot tourne même sans clé).
-6. **Web app** (`web_app.py`) : `/tick` règle les paris dont le match est
-   fini et en place de nouveaux ; `/` affiche bankroll, derniers paris,
-   dernier backtest et journal — consultable au téléphone.
+   (free tier ~500 requêtes/mois, suivi du quota restant à chaque appel),
+   sinon via `data/upcoming_matches_sample.json` (quelques matchs
+   fictifs, pour que le bot tourne même sans clé).
+7. **Web app** (`web_app.py`) : `/tick` règle les tickets dont tous les
+   matchs sont finis et en place de nouveaux ; `/` affiche bankroll,
+   derniers tickets, dernier backtest et journal — consultable au
+   téléphone.
 
 ## Structure du projet
 
@@ -57,10 +74,11 @@ fun-betting-bot-football/
   src/
     config.py          constantes (ligues, saisons, seuils, throttle API)
     data_loader.py      téléchargement historique + cotes à venir/scores
-    features.py          forme récente des équipes
+    features.py          forme récente + repos des équipes
     team_names.py        correspondance des noms d'équipes entre sources
-    model.py              entraînement + sérialisation du modèle
-    strategy.py            EV, Kelly, sélection du pari
+    model.py              modèle de buts (Poisson), entraînement + sérialisation
+    markets.py             1X2/double chance/over-under/résultat+buts déduits du modèle
+    strategy.py            EV, Kelly, sélection + combos jusqu'à 3 matchs
     simulation.py           backtest (utilisé par retrain.py)
     metrics.py                ROI, yield, win rate, drawdown, graphiques
     supabase_state.py          persistance (Supabase, REST)
@@ -101,15 +119,40 @@ fonctionnel mais se limite aux matchs d'exemple et ne peut pas régler ses
 paris automatiquement (il a besoin de l'endpoint `/scores` de la même API
 pour connaître les résultats).
 
+## Un incident, une correction
+
+Le tout premier backtest (modèle non calibré, seuil EV à 5%) a perdu
+**99,79% de la bankroll** : la régression logistique brute sortait des
+probabilités bien trop tranchées sans en avoir l'information, et la
+stratégie EV confondait ce bruit de modèle avec de la vraie valeur en
+pariant sur 87% des matchs contre un marché pourtant efficient. Corrigé
+par la calibration des probabilités (`CalibratedClassifierCV` à l'époque
+de la régression logistique, conservée en philosophie avec le modèle de
+Poisson actuel) + des seuils plus conservateurs + un coupe-circuit
+(`DRAWDOWN_STOP_FRACTION`) qui arrête les nouveaux paris si la bankroll
+tombe sous 20% du capital de départ. Aucun pari réel (même virtuel)
+n'avait encore été placé au moment de la découverte.
+
 ## Limites connues
 
+- **Blessures et coupe d'Europe/fatigue** : pas encore intégrées. Le
+  repos (jours depuis le dernier match) est calculé sans source
+  supplémentaire ; détecter précisément la participation à une coupe
+  d'Europe demanderait un calendrier européen (piste : football-data.org,
+  non intégré) ; les blessures demandent une clé API-Football (non
+  intégrée non plus — voir DEPLOIEMENT.md).
+- **Backtest 1X2 uniquement** : football-data.co.uk ne fournit pas de
+  cotes over/under historiques, donc le backtest hebdomadaire ne peut
+  valider que le marché 1X2, même si le bot EN LIVE peut aussi parier sur
+  les totals quand The Odds API fournit une vraie cote.
+- **Double chance et résultat+buts sont toujours des cotes estimées**
+  (pas un vrai marché chez The Odds API) : affichées pour comprendre,
+  jamais pariables — voir section "Comment ça marche".
 - Les mappings de noms d'équipes (`src/team_names.py`) sont construits à
   la main et n'ont pas pu être vérifiés contre les vraies API au moment de
   l'écriture — voir DEPLOIEMENT.md, section "Limites à connaître".
 - Pas de données xG (non fournies par football-data.co.uk gratuitement) :
-  les features se limitent à la forme récente (points, buts).
-- Un seul pari par match (celui à l'EV le plus élevé au-dessus du seuil),
-  pas de paris multiples sur un même match.
+  les features se limitent à la forme récente (points, buts) et au repos.
 
 ---
 

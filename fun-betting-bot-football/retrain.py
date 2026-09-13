@@ -1,10 +1,11 @@
 """
 retrain.py
 ----------
-Ré-entraîne le modèle 1X2 sur l'historique football-data.co.uk le plus
-récent, backteste la stratégie EV/Kelly sur la saison de test, et publie
-le modèle + le rapport de backtest dans Supabase (footballbot_model) pour
-que web_app.py (Render) puisse s'en servir au prochain /tick.
+Ré-entraîne le modèle de buts (Poisson) sur l'historique football-data.co.uk
+le plus récent, backteste la stratégie EV/Kelly/combos sur la saison de
+test, et publie le modèle + le rapport de backtest dans Supabase
+(footballbot_model) pour que web_app.py (Render) puisse s'en servir au
+prochain /tick.
 
 Fait pour tourner comme workflow GitHub Actions programmé (voir
 .github/workflows/retrain.yml) — pas sur Render, dont le Cron Job exige un
@@ -24,18 +25,18 @@ from src import config, data_loader, features, metrics, model as model_module, s
 
 def run(dry_run: bool = False) -> dict:
     print("Téléchargement de l'historique football-data.co.uk...")
-    df = data_loader.download_historical_data(save=False)
+    df = data_loader.download_historical_data()
     print(f"{len(df)} matchs téléchargés ({df['Season'].min()}–{df['Season'].max()}).")
 
     if not dry_run:
         sent = supabase_state.upsert_matches(df)
         print(f"{sent} lignes envoyées à Supabase (table des matchs).")
 
-    X, y = features.build_features(df)
+    X, y_home, y_away = features.build_features(df)
     meta = df.loc[X.index]
     train_mask = meta["Season"] < config.TEST_SEASON_START
-    X_train, y_train = X[train_mask], y[train_mask]
-    X_test, y_test = X[~train_mask], y[~train_mask]
+    X_train, yh_train, ya_train = X[train_mask], y_home[train_mask], y_away[train_mask]
+    X_test, yh_test, ya_test = X[~train_mask], y_home[~train_mask], y_away[~train_mask]
 
     if X_train.empty or X_test.empty:
         raise RuntimeError(
@@ -44,9 +45,9 @@ def run(dry_run: bool = False) -> dict:
         )
 
     print(f"Entraînement sur {len(X_train)} matchs, test sur {len(X_test)} matchs.")
-    trained_model = model_module.train_model(X_train, y_train)
+    trained_model = model_module.train_model(X_train, yh_train, ya_train)
 
-    bet_log = simulation.run_backtest(df, X_test, y_test, trained_model)
+    bet_log = simulation.run_backtest(df, X_test, yh_test, ya_test, trained_model)
     backtest_metrics = metrics.compute_metrics(bet_log)
     print("Backtest :", backtest_metrics)
 
@@ -71,7 +72,7 @@ def run(dry_run: bool = False) -> dict:
         "bot",
         f"Ré-entraînement : {len(X_train)} matchs (train), {len(X_test)} matchs (test, saison "
         f"{config.TEST_SEASON_START}+). Backtest — ROI {backtest_metrics['roi_pct']}%, "
-        f"yield {backtest_metrics['yield_pct']}%, {backtest_metrics['num_bets']} paris, "
+        f"yield {backtest_metrics['yield_pct']}%, {backtest_metrics['num_bets']} tickets (seuls+combinés), "
         f"win rate {backtest_metrics['win_rate']}%, drawdown max {backtest_metrics['max_drawdown_pct']}%.",
     )
     print("Modèle publié dans Supabase.")
@@ -80,7 +81,7 @@ def run(dry_run: bool = False) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Ré-entraînement hebdomadaire du modèle 1X2")
+    parser = argparse.ArgumentParser(description="Ré-entraînement hebdomadaire du modèle de buts (Poisson)")
     parser.add_argument("--dry-run", action="store_true", help="calcule et affiche, n'écrit rien dans Supabase")
     args = parser.parse_args()
 
