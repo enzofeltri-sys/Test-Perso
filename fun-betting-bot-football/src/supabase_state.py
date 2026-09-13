@@ -89,7 +89,7 @@ def save_state(state: dict) -> None:
     url = f"{_base_url()}/{_table('state')}"
     payload = {
         "id": STATE_ID,
-        "bankroll": state["bankroll"],
+        "bankroll": round(float(state["bankroll"]), 2),
         "last_odds_fetch_at": state.get("last_odds_fetch_at"),
         "last_scores_fetch_at": state.get("last_scores_fetch_at"),
         "odds_api_remaining": state.get("odds_api_remaining"),
