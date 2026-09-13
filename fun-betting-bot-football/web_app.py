@@ -688,7 +688,21 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
             f'<span class="mono">{pnl_text}</span></div></div>'
         )
 
-    bet_cards = "".join(ticket_card(t) for t in recent_tickets) or '<p class="empty">Aucun pari pour l\'instant.</p>'
+    def _ticket_end_date(t) -> str:
+        """Date de fin d'un ticket = coup d'envoi de sa DERNIÈRE jambe (le
+        ticket ne se règle qu'une fois tous les matchs joués) — chaîne
+        ISO8601, donc triable directement sans parsing (ordre alphabétique
+        = ordre chronologique)."""
+        times = [leg.get("commence_time") for leg in (t.get("legs") or []) if leg.get("commence_time")]
+        return max(times) if times else ""
+
+    pending_tickets = sorted(
+        (t for t in recent_tickets if t.get("status") == "pending"), key=_ticket_end_date,
+    )
+    other_tickets = [t for t in recent_tickets if t.get("status") != "pending"]
+    ordered_tickets = pending_tickets + other_tickets
+
+    bet_cards = "".join(ticket_card(t) for t in ordered_tickets) or '<p class="empty">Aucun pari pour l\'instant.</p>'
 
     is_preview = lambda j: (j.get("data") or {}).get("event") == "match_preview"
     main_journal = [j for j in journal if not is_preview(j)][:12]
