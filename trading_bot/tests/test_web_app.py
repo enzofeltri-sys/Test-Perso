@@ -825,8 +825,20 @@ def test_tick_response_exposes_total_exposure(monkeypatch):
 
 
 # --------------------------------------------------------------------
-# /all — vue combinée en lecture seule des 3 bots
+# /all — vue combinée en lecture seule des bots (3 de trading + le bot de
+# paris football, chacun avec son propre schéma de stats — voir
+# _fetch_trading_bot_summary / _fetch_betting_bot_summary)
 # --------------------------------------------------------------------
+
+def _stat_value(summary, label):
+    """Cherche une entrée par son libellé dans summary["stats"] (liste
+    générique {label, value} — voir _fetch_trading_bot_summary) plutôt que
+    de dépendre de l'ordre des entrées."""
+    for stat in summary["stats"]:
+        if stat["label"] == label:
+            return stat["value"]
+    raise AssertionError(f"pas de stat {label!r} dans {summary['stats']!r}")
+
 
 def _fake_requests_get(monkeypatch, tables):
     """tables: {table_name: rows_or_None (None = simule une table absente)}."""
@@ -868,9 +880,9 @@ def test_fetch_bot_summary_reads_the_given_prefix_only(monkeypatch):
     assert calls == ["altbot_state", "altbot_trades"]
     assert summary["found"] is True
     assert summary["healthy"] is True
-    assert summary["cash"] == 850.0
-    assert summary["open_positions"] == 1
-    assert summary["closed_positions"] == 0
+    assert _stat_value(summary, "Cash") == "$850.00"
+    assert _stat_value(summary, "Positions ouvertes") == 1
+    assert _stat_value(summary, "Positions clôturées") == 0
     assert summary["equity_points"] == [("2026-09-11T07:00:00Z", 994.0)]
 
 
@@ -888,8 +900,8 @@ def test_fetch_bot_summary_counts_closed_positions_from_sell_trades(monkeypatch)
 
     summary = web_app._fetch_bot_summary("tradingbot")
 
-    assert summary["open_positions"] == 1
-    assert summary["closed_positions"] == 1
+    assert _stat_value(summary, "Positions ouvertes") == 1
+    assert _stat_value(summary, "Positions clôturées") == 1
 
 
 def test_fetch_bot_summary_degrades_gracefully_when_table_is_missing(monkeypatch):
