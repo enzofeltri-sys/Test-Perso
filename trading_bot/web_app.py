@@ -32,6 +32,7 @@ import math
 import os
 import traceback
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -44,6 +45,11 @@ import alerts
 from strategy import regime_strategy_from_config
 from risk import position_size, DailyLossCircuitBreaker, TotalDrawdownCircuitBreaker
 from walk_forward import _apply_overrides as _apply_strategy_param_overrides
+
+# Tout reste en UTC en interne (Supabase, coupe-circuits) — seul l'AFFICHAGE
+# est converti en heure française. Europe/Paris plutôt qu'un décalage fixe :
+# bascule automatique CET (UTC+1)/CEST (UTC+2) selon l'heure d'été.
+_LOCAL_TZ = ZoneInfo("Europe/Paris")
 
 app = Flask(__name__)
 
@@ -763,8 +769,8 @@ def _fmt_ts(ts_str):
     if not ts_str:
         return "—"
     try:
-        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        return dt.strftime("%d/%m %H:%M UTC")
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).astimezone(_LOCAL_TZ)
+        return dt.strftime("%d/%m %H:%M %Z")
     except (ValueError, TypeError):
         return ts_str
 
@@ -996,7 +1002,7 @@ def _build_equity_chart_svg(series: list) -> str:
         # anneau de séparation (surface) puis point plein (couleur de série)
         parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="7" fill="var(--card)"/>')
         parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var({s["color_var"]})">'
-                     f'<title>{s["label"]} : ${last_v:,.2f} au {last_t.strftime("%d/%m %H:%M")} UTC</title></circle>')
+                     f'<title>{s["label"]} : ${last_v:,.2f} au {last_t.strftime("%d/%m %H:%M %Z")}</title></circle>')
         end_labels.append({"y": ly, "text": f'{s["label"]} · ${last_v:,.0f}', "color_var": s["color_var"]})
 
     end_labels.sort(key=lambda e: e["y"])
@@ -1301,7 +1307,7 @@ def all_bots():
             points = []
             for ts_raw, equity in summary["equity_points"]:
                 try:
-                    points.append((_parse_ts(ts_raw), float(equity)))
+                    points.append((_parse_ts(ts_raw).astimezone(_LOCAL_TZ), float(equity)))
                 except (ValueError, TypeError):
                     continue  # une ligne mal formée ne doit pas casser tout le graphique
             if points:
@@ -1454,7 +1460,7 @@ def alert_test():
         }), 200
 
     sent = alerts.send(
-        f"Test manuel des alertes ({datetime.now(timezone.utc).strftime('%d/%m %H:%M')} UTC). "
+        f"Test manuel des alertes ({datetime.now(_LOCAL_TZ).strftime('%d/%m %H:%M %Z')}). "
         "Si tu lis ceci, la chaîne d'alerte fonctionne de bout en bout : "
         "les vraies alertes (coupe-circuit, cycle planté, données inaccessibles) "
         "arriveront par ce même canal. Aucun impact sur le bot.",

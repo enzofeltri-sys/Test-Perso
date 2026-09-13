@@ -34,6 +34,7 @@ import os
 import html
 import math
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request
 
@@ -42,6 +43,12 @@ from src import config, data_loader, external_data, features, markets, model as 
 from src.team_names import normalize_team_name
 
 app = Flask(__name__)
+
+# Toutes les dates/heures internes (Supabase, calculs de throttle) restent en
+# UTC — seul l'AFFICHAGE sur la page de statut est converti en heure
+# française. Europe/Paris plutôt qu'un décalage fixe : bascule automatique
+# CET (UTC+1)/CEST (UTC+2) selon l'heure d'été, toujours juste.
+_LOCAL_TZ = ZoneInfo("Europe/Paris")
 
 
 def _now() -> datetime:
@@ -534,13 +541,13 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
 
     def fmt_ts(value) -> str:
         dt = _parse_iso(value) if value else None
-        return dt.strftime("%d/%m %H:%M") if dt else "—"
+        return dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M %Z") if dt else "—"
 
     chart_points = []
     for t in settled_tickets:
         dt = _parse_iso(t.get("settled_at"))
         if dt is not None and t.get("bankroll_after") is not None:
-            chart_points.append((dt, float(t["bankroll_after"])))
+            chart_points.append((dt.astimezone(_LOCAL_TZ), float(t["bankroll_after"])))
     chart_svg = _build_bankroll_chart_svg(chart_points)
 
     pnl_since_start = bankroll - config.INITIAL_BANKROLL
@@ -598,13 +605,14 @@ def _render_status_page(bankroll, recent_tickets, settled_tickets, journal, erro
         '<p class="empty">La courbe apparaîtra dès le premier pari réglé.</p>'
     )
 
+    trained_dt = _parse_iso(trained_at) if trained_at else None
     trained_line = (
-        f'Entraîné le {esc(trained_at)[:16].replace("T", " ")} UTC — backtest : '
+        f'Entraîné le {esc(trained_dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M %Z"))} — backtest : '
         f'ROI {esc(metrics.get("roi_pct"))}% · yield {esc(metrics.get("yield_pct"))}% · '
         f'{esc(metrics.get("num_bets"))} tickets · win rate {esc(metrics.get("win_rate"))}% · '
         f'drawdown max {esc(metrics.get("max_drawdown_pct"))}% '
         f'<span class="sub">(backtest 1X2 uniquement, pas de cotes over/under historiques — voir README)</span>'
-        if trained_at else
+        if trained_dt else
         "Pas encore de modèle entraîné — voir DEPLOIEMENT.md."
     )
 
