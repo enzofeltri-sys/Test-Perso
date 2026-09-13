@@ -1,0 +1,50 @@
+# Blueprint Render pour déployer web_app.py en Web Service GRATUIT.
+#
+# Ce service expose /tick (règle les paris en attente + place de nouveaux
+# paris sur les matchs à venir) et / (page de statut, consultable au
+# téléphone) — voir web_app.py. Il ne fonctionne correctement qu'accompagné
+# de :
+#   1. Un projet Supabase avec les tables footballbot_state / _matches /
+#      _model / _bets / _journal / _errors (voir DEPLOIEMENT.md pour le SQL —
+#      peut être le même projet Supabase que trading_bot, tables préfixées
+#      différemment).
+#   2. Un moniteur UptimeRobot qui ping /tick régulièrement (voir
+#      DEPLOIEMENT.md) — sans lui, le service s'endort après 15 minutes
+#      d'inactivité et le bot ne tourne plus.
+#   3. Au moins un run de retrain.py (voir .github/workflows dans le repo
+#      racine) pour qu'un modèle existe — sans ça, /tick ne place aucun pari.
+#
+# Déploiement : sur render.com -> New -> Blueprint -> connecter le repo
+# GitHub, pointer vers ce fichier (fun-betting-bot-football/render.yaml).
+# Si le Blueprint ne détecte pas automatiquement le sous-dossier, crée le
+# service manuellement (New -> Web Service) et renseigne "Root Directory" =
+# fun-betting-bot-football à la place.
+
+services:
+  - type: web
+    name: football-betting-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    rootDir: fun-betting-bot-football
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 60
+    envVars:
+      - key: SUPABASE_URL
+        sync: false   # à renseigner manuellement dans le dashboard Render
+      - key: SUPABASE_KEY
+        sync: false   # à renseigner manuellement dans le dashboard Render (clé "anon")
+      - key: TABLE_PREFIX
+        value: footballbot
+      - key: ODDS_API_KEY
+        sync: false   # optionnel : sans clé, le bot utilise data/upcoming_matches_sample.json
+      - key: BOT_LABEL
+        value: "bot de paris football virtuels"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+# Le ré-entraînement hebdomadaire (retrain.py) tourne via GitHub Actions,
+# pas Render — un Cron Job Render exige un plan payant, alors que GitHub
+# Actions est gratuit pour un déclenchement hebdomadaire de quelques
+# minutes. Voir .github/workflows/retrain-football-bot.yml (à la racine du
+# repo) et DEPLOIEMENT.md.

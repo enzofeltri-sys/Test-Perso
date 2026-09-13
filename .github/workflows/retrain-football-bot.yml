@@ -1,0 +1,53 @@
+name: Ré-entraînement hebdomadaire du bot de paris football
+
+# Télécharge l'historique football-data.co.uk à jour, ré-entraîne le
+# modèle 1X2, backteste la stratégie EV/Kelly, et publie le modèle +
+# le rapport de backtest dans Supabase (footballbot_model) pour que
+# web_app.py (Render) s'en serve au prochain /tick. Voir
+# fun-betting-bot-football/retrain.py et README.md.
+#
+# Nécessite deux secrets de dépôt (Settings -> Secrets and variables ->
+# Actions) : SUPABASE_URL et SUPABASE_KEY (la clé "anon" du projet
+# Supabase — le même projet que web_app.py sur Render, tables préfixées
+# footballbot_).
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"    # tous les lundis à 4h UTC
+  workflow_dispatch:        # déclenchement manuel depuis l'onglet Actions, pour tester
+    inputs:
+      dry_run:
+        description: "Calculer et afficher le rapport, sans rien écrire dans Supabase"
+        type: boolean
+        default: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fun-betting-bot-football
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Ré-entraîner et backtester
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TABLE_PREFIX: footballbot
+        run: python retrain.py ${{ inputs.dry_run == true && '--dry-run' || '' }}
+
+      - name: Publier les graphiques du backtest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-plots
+          path: fun-betting-bot-football/notebooks/plots/*.png
+          if-no-files-found: ignore

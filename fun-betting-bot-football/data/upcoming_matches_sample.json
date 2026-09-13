@@ -1,0 +1,38 @@
+[
+  {
+    "league": "E0",
+    "home_team": "Arsenal",
+    "away_team": "Chelsea",
+    "commence_time": "2026-09-20T15:00:00Z",
+    "odds_h": 2.10,
+    "odds_d": 3.40,
+    "odds_a": 3.60
+  },
+  {
+    "league": "E0",
+    "home_team": "Liverpool",
+    "away_team": "Manchester City",
+    "commence_time": "2026-09-20T17:30:00Z",
+    "odds_h": 2.75,
+    "odds_d": 3.50,
+    "odds_a": 2.55
+  },
+  {
+    "league": "F1",
+    "home_team": "Paris SG",
+    "away_team": "Marseille",
+    "commence_time": "2026-09-21T19:00:00Z",
+    "odds_h": 1.55,
+    "odds_d": 4.20,
+    "odds_a": 5.50
+  },
+  {
+    "league": "F1",
+    "home_team": "Lyon",
+    "away_team": "Monaco",
+    "commence_time": "2026-09-21T21:00:00Z",
+    "odds_h": 2.90,
+    "odds_d": 3.30,
+    "odds_a": 2.40
+  }
+]

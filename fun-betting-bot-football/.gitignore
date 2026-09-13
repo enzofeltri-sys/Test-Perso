@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+notebooks/plots/*.png
+.ipynb_checkpoints/
