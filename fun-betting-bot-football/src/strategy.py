@@ -54,12 +54,19 @@ def best_candidate_for_match(candidates: list[dict]) -> dict | None:
     retourne celui à l'EV la plus haute PARMI LES COTES RÉELLES uniquement
     — jamais une cote estimée : le bot ne parie jamais contre sa propre
     estimation faute de prix de marché indépendant (voir src/markets.py).
-    None si aucun candidat n'a de cote réelle exploitable."""
+    Ignore aussi les candidats dont l'EV dépasse config.MAX_SANE_EV (voir
+    ce commentaire) : une EV énorme trahit presque toujours une probabilité
+    de modèle aberrante plutôt qu'une vraie occasion, un autre candidat du
+    même match reste éligible s'il en a une plus raisonnable. None si aucun
+    candidat n'a de cote réelle exploitable ET une EV crédible."""
     real = [c for c in candidates if not c["is_estimated"] and _is_valid_odds(c.get("odds"))]
     if not real:
         return None
     scored = [{**c, "ev": calculate_ev(c["prob"], c["odds"])} for c in real]
-    return max(scored, key=lambda c: c["ev"])
+    sane = [c for c in scored if c["ev"] <= config.MAX_SANE_EV]
+    if not sane:
+        return None
+    return max(sane, key=lambda c: c["ev"])
 
 
 def _match_key(match: dict) -> tuple:

@@ -186,6 +186,13 @@ INITIAL_BANKROLL = 1000.0
 # forme ne mérite pas une confiance illimitée.
 SINGLE_EV_THRESHOLD = 0.10       # pari seul : EV > 10%
 COMBO_LEG_EV_THRESHOLD = 0.15    # chaque jambe d'un combiné doit être plus solide qu'un pari seul
+# Plafond de bon sens, complémentaire à MIN_RECENT_MATCHES (features.py) :
+# une EV réelle et durable dépasse rarement quelques dizaines de %. Une EV
+# calculée au-delà de ce plafond (observées en prod : +178% à +286%, sur
+# des équipes à données rares) trahit presque toujours une probabilité de
+# modèle aberrante plutôt qu'une vraie occasion — le candidat est ignoré
+# plutôt que parié, même si une autre sélection du même match reste éligible.
+MAX_SANE_EV = 1.0                # 100% : au-delà, on ne fait plus confiance à l'EV calculée
 MAX_COMBO_LEGS = 3               # jamais plus de 3 matchs dans un même pari combiné
 KELLY_MULTIPLIER = 0.15          # fraction de Kelly (0.15, plus prudent que le "quart de Kelly" classique)
 MAX_STAKE_FRACTION = 0.03        # garde-fou : jamais plus de 3% de la bankroll sur un seul pari/combiné

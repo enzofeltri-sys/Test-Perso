@@ -248,14 +248,23 @@ def _describe_match_markets(match: dict, probs: dict, candidates: list) -> str:
     return " | ".join(parts)
 
 
-def _describe_match_context(match: dict, european_matches: list) -> str:
+def _describe_match_context(match: dict, european_matches: list, deadline: float) -> str:
     """Contexte optionnel — blessures (API-Football) et match européen
     récent (football-data.org) — pour lecture humaine uniquement (voir
     src/external_data.py : ni l'un ni l'autre n'entraîne le modèle).
     Chaîne vide si rien d'utile (pas de clé configurée, rien trouvé) :
-    l'appelant n'ajoute alors rien au journal."""
+    l'appelant n'ajoute alors rien au journal.
+
+    `deadline` (time.monotonic()) est revérifié à CHAQUE équipe, pas
+    seulement une fois par match côté appelant : une seule équipe lente
+    (plusieurs appels réseau, chacun avec son propre timeout) pouvait à
+    elle seule épuiser tout le budget de temps du cycle avant même
+    d'atteindre la deuxième équipe du premier match — vécu en prod (1 seul
+    appel API-Football consommé, 0 ligne "Contexte" sur 20+ matchs)."""
     parts = []
     for label, team in (("dom.", match["home_team"]), ("ext.", match["away_team"])):
+        if time.monotonic() >= deadline:
+            break
         bits = []
         injuries = external_data.fetch_injury_count(team)
         if injuries is not None:
@@ -335,12 +344,6 @@ def _place_new_bets(state: dict, errors: list) -> int:
             if (dt := _parse_iso(m.get("commence_time"))) is not None and dt <= horizon
         ]
 
-        try:
-            external_data.reset_call_budget()
-            european_matches = external_data.fetch_recent_european_matches()
-        except Exception:
-            european_matches = []
-
         # Budget de temps global (pas juste par appel) pour l'enrichissement
         # contexte (blessures/coupe d'Europe) : chaque appel réseau a déjà
         # son propre timeout (voir supabase_state.get_team_ref,
@@ -352,7 +355,22 @@ def _place_new_bets(state: dict, errors: list) -> int:
         # src/external_data.py est individuellement best-effort. Passé ce
         # budget, on continue à évaluer/parier normalement mais sans
         # contexte affiché pour les matchs restants — jamais l'inverse.
+        # Doit être posé AVANT le fetch européen ci-dessous : sinon ce fetch
+        # (jusqu'à 2 appels réseau) tournait hors budget, et le budget lui-même
+        # n'était revérifié qu'une fois par MATCH — une seule équipe lente
+        # suffisait à tout consommer avant la deuxième équipe du premier
+        # match (vécu en prod : 1 appel API-Football, 0 ligne "Contexte" sur
+        # 20+ matchs). Revérifié maintenant à chaque équipe (voir
+        # _describe_match_context) et avant le fetch européen lui-même.
         context_deadline = time.monotonic() + 20
+
+        try:
+            external_data.reset_call_budget()
+            european_matches = (
+                external_data.fetch_recent_european_matches() if time.monotonic() < context_deadline else []
+            )
+        except Exception:
+            european_matches = []
 
         round_matches = []
         for match in upcoming:
@@ -378,7 +396,7 @@ def _place_new_bets(state: dict, errors: list) -> int:
             context = ""
             if time.monotonic() < context_deadline:
                 try:
-                    context = _describe_match_context(match, european_matches)
+                    context = _describe_match_context(match, european_matches, context_deadline)
                 except Exception:
                     context = ""
             if context:

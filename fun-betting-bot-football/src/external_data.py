@@ -46,11 +46,32 @@ def _api_football_quota_ok() -> bool:
 # cycles, largement espacés par le throttle ODDS_FETCH_INTERVAL_HOURS).
 _call_budget = {"remaining": None}
 
+# Cache mémoire de footballbot_team_refs pour la durée du cycle EN COURS.
+# resolve_api_football_team_id, fetch_injury_count et fetch_recent_uefa_fixture
+# lisent chacune la même ligne pour une même équipe — jusqu'à 3 lectures
+# Supabase redondantes par équipe sans ce cache, qui s'ajoutaient au budget
+# de temps global du cycle (voir web_app._place_new_bets) au point
+# d'empêcher tout appel API-Football d'aboutir sur les toutes premières
+# équipes traitées. Réinitialisé avec _call_budget par reset_call_budget().
+_team_ref_cache: dict = {}
+
 
 def reset_call_budget(max_calls: int = None) -> None:
     """À appeler une fois par cycle, avant toute autre fonction de ce
     module (voir web_app._place_new_bets)."""
     _call_budget["remaining"] = max_calls if max_calls is not None else config.API_FOOTBALL_MAX_CALLS_PER_CYCLE
+    _team_ref_cache.clear()
+
+
+def _get_team_ref(team_name: str) -> dict:
+    if team_name not in _team_ref_cache:
+        _team_ref_cache[team_name] = supabase_state.get_team_ref(team_name)
+    return _team_ref_cache[team_name]
+
+
+def _save_team_ref(team_name: str, **fields) -> None:
+    supabase_state.save_team_ref(team_name, **fields)
+    _team_ref_cache[team_name] = {**_team_ref_cache.get(team_name, {}), **fields}
 
 
 def _api_football_get(path: str, params: dict) -> list | None:
@@ -71,7 +92,7 @@ def _api_football_get(path: str, params: dict) -> list | None:
         )
         resp = requests.get(
             f"{config.API_FOOTBALL_BASE_URL}/{path}",
-            headers=_api_football_headers(), params=params, timeout=10,
+            headers=_api_football_headers(), params=params, timeout=6,
         )
         resp.raise_for_status()
 
@@ -98,7 +119,7 @@ def resolve_api_football_team_id(team_name: str) -> int | None:
     if not config.API_FOOTBALL_KEY:
         return None
 
-    cached = supabase_state.get_team_ref(team_name)
+    cached = _get_team_ref(team_name)
     if cached.get("api_football_id") is not None:
         return cached["api_football_id"]
 
@@ -107,7 +128,7 @@ def resolve_api_football_team_id(team_name: str) -> int | None:
         return None
 
     team_id = results[0]["team"]["id"]
-    supabase_state.save_team_ref(team_name, api_football_id=team_id)
+    _save_team_ref(team_name, api_football_id=team_id)
     return team_id
 
 
@@ -119,7 +140,7 @@ def fetch_injury_count(team_name: str) -> int | None:
     if not config.API_FOOTBALL_KEY:
         return None
 
-    cached = supabase_state.get_team_ref(team_name)
+    cached = _get_team_ref(team_name)
     checked_at = cached.get("injury_checked_at")
     if checked_at:
         try:
@@ -138,7 +159,7 @@ def fetch_injury_count(team_name: str) -> int | None:
         return None
 
     count = len(results)
-    supabase_state.save_team_ref(
+    _save_team_ref(
         team_name, injury_count=count, injury_checked_at=datetime.now(timezone.utc).isoformat(),
     )
     return count
