@@ -631,6 +631,71 @@ def test_status_page_survives_journal_lookup_failure(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_status_page_shows_only_the_3_most_recent_trades_with_a_link_to_the_full_history(monkeypatch):
+    """La page d'accueil reste courte — le détail complet est sur
+    /historique (voir HISTORY_PAGE), pas dupliqué ici."""
+    fake_db = FakeDB()
+    for i in range(6):
+        fake_db.trades.append({
+            "symbol": "BTC/USDT", "side": "buy", "price": 60000.0 + i, "qty": 0.01,
+            "reason": "signal", "cash_after": 900.0, "equity_after": 1000.0 + i,
+            "ts": f"2026-09-0{i + 1}T00:00:00+00:00",
+        })
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    html = web_app.app.test_client().get("/").get_data(as_text=True)
+
+    assert html.count("60000.0") <= 1  # au plus 1 des 6 prix ne partage pas ce préfixe exact
+    # compte les lignes de trade affichées via le motif "@ $600" commun aux 6
+    assert sum(html.count(f"@ ${60000 + i:.2f}") for i in range(6)) == 3
+    assert 'href="/historique"' in html
+    assert "Historique complet" in html
+
+
+def test_historique_route_shows_all_trades_and_total_pnl(monkeypatch):
+    fake_db = FakeDB()
+    fake_db.trades = [
+        {"symbol": "BTC/USDT", "side": "buy", "price": 60000.0, "qty": 0.01,
+         "reason": "signal", "cash_after": 400.0, "equity_after": 1000.0,
+         "ts": "2026-09-01T00:00:00+00:00"},
+        {"symbol": "BTC/USDT", "side": "sell", "price": 61000.0, "qty": 0.01,
+         "reason": "target", "cash_after": 1010.0, "equity_after": 1010.0,
+         "ts": "2026-09-02T00:00:00+00:00"},
+    ]
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    resp = web_app.app.test_client().get("/historique")
+    html = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert html.count("BTC/USDT") == 2  # les DEUX trades apparaissent, pas juste les 3 derniers
+    assert "+10.00$" in html and "+1.0%" in html
+    assert 'href="/"' in html  # lien de retour
+
+
+def test_historique_route_notes_when_the_list_is_capped(monkeypatch):
+    fake_db = FakeDB()
+    fake_db.trades = [{
+        "symbol": "BTC/USDT", "side": "buy", "price": 100.0, "qty": 1.0,
+        "reason": "signal", "cash_after": 900.0, "equity_after": 1000.0,
+        "ts": f"2026-01-{(i % 28) + 1:02d}T00:00:00+00:00",
+    } for i in range(web_app.HISTORY_TRADES_LIMIT)]
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    html = web_app.app.test_client().get("/historique").get_data(as_text=True)
+
+    assert "les plus récents" in html
+
+
+def test_historique_route_never_crashes_even_if_supabase_is_unreachable(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+
+    resp = web_app.app.test_client().get("/historique")
+
+    assert resp.status_code == 200
+
+
 def _patch_market(monkeypatch, symbols, clock):
     histories = {s: make_ohlcv(seed=i, n=700, start=100.0 + i * 20) for i, s in enumerate(symbols)}
     monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
@@ -976,6 +1041,57 @@ def test_all_route_shows_the_summary_but_never_the_trade_by_trade_detail(monkeyp
     assert "BTC/USDT" not in html  # pas de ligne de trade individuelle
 
 
+def test_all_route_shows_total_pnl_based_on_the_last_trade_s_equity(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 950.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "buy", "reason": "signal", "price": 60000.0, "qty": 0.01,
+             "ts": "2026-09-01T00:00:00Z", "equity_after": 990.0},
+            {"symbol": "BTC/USDT", "side": "sell", "reason": "target", "price": 61000.0, "qty": 0.01,
+             "ts": "2026-09-02T00:00:00Z", "equity_after": 1042.5},
+        ],
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert "Gain/perte total" in html
+    assert "+42.50$" in html
+    assert "+4.2%" in html  # 42.5/1000*100 = 4.25, arrondi à la représentation flottante la plus proche
+
+
+def test_all_route_shows_a_loss_with_the_bad_color_class(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 950.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [
+            {"symbol": "BTC/USDT", "side": "sell", "reason": "stop_loss", "price": 59000.0, "qty": 0.01,
+             "ts": "2026-09-01T00:00:00Z", "equity_after": 950.0},
+        ],
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert "-50.00$" in html
+    assert '"v bad"' in html
+
+
+def test_all_route_shows_zero_pnl_when_no_bot_has_ever_traded(monkeypatch):
+    _fake_requests_get(monkeypatch, {
+        "tradingbot_state": [{"cash": 1000.0, "positions": {}, "daily_tripped_today": False, "total_dd_tripped": False}],
+        "tradingbot_trades": [],
+        "altbot_state": None, "altbot_trades": None,
+        "microbot_state": None, "microbot_trades": None,
+    })
+
+    html = web_app.app.test_client().get("/all").get_data(as_text=True)
+
+    assert "+0.00$" in html
+    assert "+0.0%" in html
+
+
 def test_all_route_never_crashes_even_if_supabase_is_unreachable(monkeypatch):
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_KEY", raising=False)
@@ -1086,6 +1202,35 @@ def test_all_route_falls_back_to_the_empty_state_when_nothing_has_ever_traded(mo
 
     assert "Aucun trade sur aucun bot pour l'instant" in html
     assert 'class="range-tab' not in html
+
+
+# --------------------------------------------------------------------
+# _compute_total_pnl — gain/perte total depuis le capital de départ
+# --------------------------------------------------------------------
+
+def test_compute_total_pnl_uses_the_latest_trade_s_equity_after():
+    pnl = web_app._compute_total_pnl({"equity_after": 1123.45}, cash=999.0)
+    assert pnl["total_pnl_usd"] == pytest.approx(123.45)
+    assert pnl["total_pnl_pct"] == pytest.approx(12.345)
+
+
+def test_compute_total_pnl_falls_back_to_cash_when_there_is_no_trade():
+    pnl = web_app._compute_total_pnl(None, cash=1000.0)
+    assert pnl["total_pnl_usd"] == pytest.approx(0.0)
+    assert pnl["total_pnl_pct"] == pytest.approx(0.0)
+
+
+def test_compute_total_pnl_falls_back_to_cash_when_the_trade_has_no_equity_after():
+    """Ligne mal formée (equity_after absent) : ne doit jamais planter, se
+    replier sur le cash plutôt qu'inventer un chiffre."""
+    pnl = web_app._compute_total_pnl({"equity_after": None}, cash=850.0)
+    assert pnl["total_pnl_usd"] == pytest.approx(-150.0)
+
+
+def test_compute_total_pnl_returns_none_when_nothing_is_known():
+    pnl = web_app._compute_total_pnl(None, cash=None)
+    assert pnl["total_pnl_usd"] is None
+    assert pnl["total_pnl_pct"] is None
 
 
 # --------------------------------------------------------------------

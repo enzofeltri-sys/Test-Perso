@@ -162,7 +162,10 @@ STATUS_PAGE = """<!doctype html>
   </section>
 
   <section>
-    <p class="label">Derniers trades</p>
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:20px;">
+      <p class="label" style="margin:0;">Derniers trades</p>
+      <a href="/historique" style="font-size:0.78rem; color:var(--accent);">Historique complet →</a>
+    </div>
     {% if trades %}
       {% for t in trades %}
       <div class="row">
@@ -219,6 +222,157 @@ STATUS_PAGE = """<!doctype html>
   // "Tirer pour rafraîchir" en JS : nécessaire dès que la page est ouverte
   // en PWA/écran d'accueil (pas de barre de navigateur pour tirer dessus),
   // et fonctionne aussi dans un onglet de navigateur classique.
+  var indicator = document.getElementById("pull-indicator");
+  var THRESHOLD = 70;
+  var startY = null;
+  var pulling = false;
+
+  document.addEventListener("touchstart", function (e) {
+    if (window.scrollY <= 0) {
+      startY = e.touches[0].clientY;
+      pulling = true;
+    }
+  }, { passive: true });
+
+  document.addEventListener("touchmove", function (e) {
+    if (!pulling || startY === null) return;
+    var dy = e.touches[0].clientY - startY;
+    if (dy <= 0) { indicator.style.transform = ""; indicator.classList.remove("armed"); return; }
+    var pull = Math.min(dy, THRESHOLD * 1.6);
+    indicator.style.transform = "translateY(" + pull + "px)";
+    indicator.textContent = dy > THRESHOLD ? "relâcher pour rafraîchir" : "tirer pour rafraîchir";
+    indicator.classList.toggle("armed", dy > THRESHOLD);
+  }, { passive: true });
+
+  document.addEventListener("touchend", function (e) {
+    if (!pulling || startY === null) return;
+    var dy = (e.changedTouches[0].clientY - startY);
+    pulling = false;
+    startY = null;
+    if (dy > THRESHOLD) {
+      indicator.textContent = "actualisation…";
+      window.location.reload();
+    } else {
+      indicator.style.transform = "";
+      indicator.classList.remove("armed");
+    }
+  });
+})();
+</script>
+"""
+
+
+HISTORY_PAGE = """<!doctype html>
+<title>Historique — {{ bot_label }}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
+    --rule:#DBDBD6; --accent:#96622A; --green:#3E7A52; --red:#A3453A;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
+      --rule:#333432; --accent:#CB9855; --green:#6FAE87; --red:#D08076;
+    }
+  }
+  *{ box-sizing:border-box; margin:0; }
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    line-height:1.55;
+  }
+  .wrap{ max-width:600px; margin:0 auto; padding:72px 24px 96px; }
+  .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; }
+  header{ margin-bottom:40px; }
+  .back-link{ font-size:0.82rem; color:var(--accent); display:inline-block; margin-bottom:20px; }
+  .kicker{
+    font-family:"IBM Plex Mono", monospace; font-size:0.72rem; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 14px;
+  }
+  h1{
+    font-family:"Fraunces", Georgia, serif; font-weight:500; font-size:2.1rem;
+    letter-spacing:-0.01em; line-height:1.08; margin:0 0 16px;
+  }
+  .summary{ display:flex; gap:24px; flex-wrap:wrap; }
+  .summary .n{ font-size:0.78rem; color:var(--text-muted); margin-bottom:3px; }
+  .summary .v{ font-family:"IBM Plex Mono", monospace; font-variant-numeric:tabular-nums; font-size:1.05rem; }
+  .summary .v.good{ color:var(--green); } .summary .v.bad{ color:var(--red); }
+  .row{ display:flex; justify-content:space-between; align-items:baseline; gap:16px; padding:13px 0; border-top:1px solid var(--rule); }
+  .row .name{ font-weight:500; font-size:0.9rem; }
+  .row .detail{ font-size:0.79rem; color:var(--text-muted); margin-top:2px; }
+  .row .side{ font-family:"IBM Plex Mono", monospace; font-size:0.74rem; white-space:nowrap; flex-shrink:0; }
+  .row .side.buy{ color:var(--green); }
+  .row .side.sell{ color:var(--red); }
+  .empty{ font-size:0.85rem; color:var(--text-faint); }
+  .cap-note{ font-size:0.78rem; color:var(--text-faint); text-align:center; padding-top:20px; }
+  footer{ padding-top:30px; border-top:1px solid var(--rule); font-size:0.82rem; color:var(--text-muted); }
+  footer a{ color:var(--accent); }
+
+  #pull-indicator{
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    display:flex; align-items:center; justify-content:center;
+    height:52px; margin-top:-52px;
+    font-family:"IBM Plex Mono", monospace; font-size:0.72rem;
+    letter-spacing:0.08em; text-transform:uppercase; color:var(--text-muted);
+    transition:transform 0.15s ease-out;
+    pointer-events:none;
+  }
+  #pull-indicator.armed{ color:var(--accent); }
+  @media (prefers-reduced-motion: reduce){ #pull-indicator{ transition:none; } }
+</style>
+
+<div id="pull-indicator">tirer pour rafraîchir</div>
+
+<div class="wrap">
+  <header>
+    <a class="back-link" href="/">← Retour</a>
+    <p class="kicker">{{ bot_label|capitalize }} — historique complet</p>
+    <h1>Historique</h1>
+    <div class="summary">
+      <div><div class="n">Cash</div><div class="v">${{ '%.2f'|format(cash) }}</div></div>
+      <div>
+        <div class="n">Gain/perte total</div>
+        <div class="v {{ 'good' if total_pnl_usd and total_pnl_usd > 0 else ('bad' if total_pnl_usd and total_pnl_usd < 0 else '') }}">
+          {% if total_pnl_usd is not none %}
+            {{ '%+.2f'|format(total_pnl_usd) }}$ ({{ '%+.1f'|format(total_pnl_pct) }}%)
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section>
+    {% if trades %}
+      {% for t in trades %}
+      <div class="row">
+        <div>
+          <div class="name">{{ t.symbol }}</div>
+          <div class="detail">{{ t.ts }} · {{ t.reason }} · {{ '%.6f'|format(t.qty) }} @ ${{ '%.2f'|format(t.price) }} · équity après ${{ '%.2f'|format(t.equity_after) if t.equity_after is not none else '—' }}</div>
+        </div>
+        <span class="side mono {{ t.side }}">{{ t.side }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">Aucun trade pour l'instant.</p>
+    {% endif %}
+    {% if capped %}
+      <p class="cap-note">Les {{ trades|length }} trades les plus récents — l'historique complet est plus long.</p>
+    {% endif %}
+  </section>
+
+  <footer>
+    <p>Tire vers le bas en haut de la page pour rafraîchir · <a href="/">retour au journal de bord</a>.</p>
+  </footer>
+</div>
+
+<script>
+(function () {
   var indicator = document.getElementById("pull-indicator");
   var THRESHOLD = 70;
   var startY = null;
@@ -799,6 +953,34 @@ CHART_RANGES = [
 ]
 DEFAULT_CHART_RANGE = "tout"
 
+# Capital de départ (USDT virtuels), identique pour les 3 bots — voir
+# ATTENTES.md ("Capital de départ identique, 1000 USDT virtuels") et
+# paper_trading.initial_balance dans chacun des 3 fichiers de config.
+STARTING_BALANCE = 1000.0
+
+
+def _compute_total_pnl(latest_trade: dict, cash: float) -> dict:
+    """Gain/perte total depuis le capital de départ, basé sur l'equity_after
+    du DERNIER trade exécuté — pas un mark-to-market en temps réel des
+    positions ouvertes (même limite que le graphique de /all, qui ne trace
+    un point qu'à chaque trade, jamais entre deux). Sans aucun trade, le
+    capital n'a pas bougé : on retombe sur `cash`.
+
+    `latest_trade` : le dict du trade le plus récent (peu importe d'où il
+    vient — ASC ou DESC, à l'appelant de prendre le bon élément), ou None
+    s'il n'y en a aucun."""
+    last_equity = None
+    if latest_trade and latest_trade.get("equity_after") is not None:
+        last_equity = float(latest_trade["equity_after"])
+    if last_equity is None:
+        last_equity = cash
+
+    if last_equity is None:
+        return {"total_pnl_usd": None, "total_pnl_pct": None}
+
+    pnl_usd = last_equity - STARTING_BALANCE
+    return {"total_pnl_usd": pnl_usd, "total_pnl_pct": pnl_usd / STARTING_BALANCE * 100}
+
 
 def _fetch_bot_summary(prefix: str) -> dict:
     """Lit l'essentiel d'UN bot par son préfixe de table, en lecture seule,
@@ -828,6 +1010,7 @@ def _fetch_bot_summary(prefix: str) -> dict:
 
     positions = _normalize_positions((state or {}).get("positions"))
     healthy = state is not None and not (state.get("daily_tripped_today") or state.get("total_dd_tripped"))
+    pnl = _compute_total_pnl(trades_asc[-1] if trades_asc else None, (state or {}).get("cash"))
 
     return {
         "found": state_rows is not None,
@@ -839,6 +1022,8 @@ def _fetch_bot_summary(prefix: str) -> dict:
         # max_positions_per_symbol), donc len(positions) sous-compterait.
         "open_positions": sum(len(v) for v in positions.values()),
         "closed_positions": sum(1 for t in trades_asc if t.get("side") == "sell"),
+        "total_pnl_usd": pnl["total_pnl_usd"],
+        "total_pnl_pct": pnl["total_pnl_pct"],
         # (ts brut, equity_after) — matière première du graphique, jamais
         # affiché directement ; on garde le ts ISO ici, l'analyse (parsing,
         # échelle) est isolée dans _build_equity_chart_svg pour rester testable.
@@ -1013,6 +1198,7 @@ ALL_PAGE = """<!doctype html>
   .stats-row{ display:flex; gap:24px; margin-top:14px; flex-wrap:wrap; }
   .stat .n{ font-size:0.72rem; color:var(--text-muted); margin-bottom:2px; }
   .stat .v{ font-family:"IBM Plex Mono", monospace; font-variant-numeric:tabular-nums; font-size:0.98rem; }
+  .stat .v.good{ color:var(--green); } .stat .v.bad{ color:var(--red); }
   .empty{ font-size:0.82rem; color:var(--text-faint); margin-bottom:14px; }
   .bot-link{
     display:inline-flex; align-items:center; gap:6px; margin-top:16px;
@@ -1132,6 +1318,16 @@ ALL_PAGE = """<!doctype html>
         <div class="stat"><div class="n">Cash</div><div class="v">{{ '$%.2f'|format(b.summary.cash) if b.summary.cash is not none else '—' }}</div></div>
         <div class="stat"><div class="n">Positions ouvertes</div><div class="v">{{ b.summary.open_positions }}</div></div>
         <div class="stat"><div class="n">Positions clôturées</div><div class="v">{{ b.summary.closed_positions }}</div></div>
+        <div class="stat">
+          <div class="n">Gain/perte total</div>
+          <div class="v {{ 'good' if b.summary.total_pnl_usd and b.summary.total_pnl_usd > 0 else ('bad' if b.summary.total_pnl_usd and b.summary.total_pnl_usd < 0 else '') }}">
+            {% if b.summary.total_pnl_usd is not none %}
+              {{ '%+.2f'|format(b.summary.total_pnl_usd) }}$ ({{ '%+.1f'|format(b.summary.total_pnl_pct) }}%)
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
       </div>
     {% endif %}
     {% if not b.summary.found %}
@@ -1303,7 +1499,9 @@ def health():
         pt_cfg = cfg["paper_trading"]
 
         state = db.load_state(initial_balance=pt_cfg["initial_balance"])
-        trades = db.get_recent_trades(limit=8)
+        # juste un aperçu ici — la liste complète est sur /historique,
+        # volontairement séparée pour garder cette page courte.
+        trades = db.get_recent_trades(limit=3)
         errors = db.get_recent_errors(limit=5)
         journal = db.get_recent_journal(limit=8)
         # load_config_overrides() est déjà best-effort ({} si Supabase
@@ -1343,6 +1541,44 @@ def health():
         ), 200
     except Exception:
         return "OK - bot de paper trading en ligne. Utilise /tick pour déclencher un cycle.", 200
+
+
+# Au-delà de ce nombre, on affiche une note plutôt que de laisser croire
+# que la liste est complète — aux volumes de trades de ce projet (au plus
+# quelques dizaines par mois), ça représente déjà plusieurs mois d'historique.
+HISTORY_TRADES_LIMIT = 500
+
+
+@app.route("/historique")
+def historique():
+    # Page séparée de "/" : la liste complète peut être longue, pas de
+    # raison de l'imposer à chaque chargement du journal de bord. Ne doit
+    # JAMAIS faire échouer, comme "/" — un souci Supabase retombe sur un
+    # texte simple plutôt que de planter la page.
+    try:
+        cfg = load_config()
+        pt_cfg = cfg["paper_trading"]
+
+        state = db.load_state(initial_balance=pt_cfg["initial_balance"])
+        trades = db.get_recent_trades(limit=HISTORY_TRADES_LIMIT)  # déjà trié du plus récent au plus ancien
+
+        pnl = _compute_total_pnl(trades[0] if trades else None, state["cash"])
+
+        trades_view = [{
+            "ts": _fmt_ts(t.get("ts")), "symbol": t.get("symbol"), "side": t.get("side"),
+            "price": t.get("price"), "qty": t.get("qty"), "reason": t.get("reason"),
+            "equity_after": t.get("equity_after"),
+        } for t in trades]
+
+        return render_template_string(
+            HISTORY_PAGE,
+            cash=state["cash"],
+            total_pnl_usd=pnl["total_pnl_usd"], total_pnl_pct=pnl["total_pnl_pct"],
+            trades=trades_view, capped=(len(trades) >= HISTORY_TRADES_LIMIT),
+            bot_label=os.environ.get("BOT_LABEL") or "bot de trading crypto",
+        ), 200
+    except Exception:
+        return "OK - historique indisponible pour le moment.", 200
 
 
 @app.route("/tick")
