@@ -873,6 +873,11 @@ def _fetch_betting_bot_summary(prefix: str) -> dict:
     """Équivalent de _fetch_trading_bot_summary pour le bot de paris
     football (schéma différent : bankroll + paris H/D/A au lieu de
     cash + positions). Toujours en lecture seule, best-effort."""
+    # Doit correspondre à fun-betting-bot-football/src/config.py INITIAL_BANKROLL
+    # — cette page lit les tables Supabase du bot foot directement en REST,
+    # sans importer son config.py (processus/dépôt séparés).
+    FOOTBALL_INITIAL_BANKROLL = 1000.0
+
     state_rows = _rest_get(prefix, "state", {"id": "eq.default", "select": "*"})
     state = (state_rows or [{}])[0] if state_rows else {}
     bets_asc = _rest_get(prefix, "bets", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
@@ -881,12 +886,24 @@ def _fetch_betting_bot_summary(prefix: str) -> dict:
     pending = [b for b in bets_asc if b.get("status") == "pending"]
     win_rate = (sum(1 for b in settled if b["status"] == "won") / len(settled) * 100) if settled else None
 
+    total_stake_pending = sum(float(b.get("stake") or 0) for b in pending)
+    total_potential_gain = sum(float(b.get("stake") or 0) * (float(b.get("odds") or 0) - 1) for b in pending)
+    bankroll = state.get("bankroll")
+    pnl_since_start = (float(bankroll) - FOOTBALL_INITIAL_BANKROLL) if bankroll is not None else None
+
     return {
         "found": state_rows is not None,
         "healthy": True,  # pas de coupe-circuit sur ce bot : "healthy" = "en ligne"
         "total_dd_tripped": False,
         "stats": [
-            {"label": "Bankroll", "value": f"${state.get('bankroll'):.2f}" if state.get("bankroll") is not None else "—"},
+            {"label": "Bankroll", "value": f"${bankroll:.2f}" if bankroll is not None else "—"},
+            {
+                "label": "Gains/pertes total",
+                "value": f"{'+' if pnl_since_start >= 0 else ''}${pnl_since_start:.2f}"
+                if pnl_since_start is not None else "—",
+            },
+            {"label": "Mise en cours", "value": f"${total_stake_pending:.2f}"},
+            {"label": "Gain potentiel en cours", "value": f"+${total_potential_gain:.2f}"},
             {"label": "Paris en attente", "value": len(pending)},
             {"label": "Paris réglés", "value": f"{len(settled)} ({win_rate:.0f}% gagnés)" if settled else "0"},
         ],
