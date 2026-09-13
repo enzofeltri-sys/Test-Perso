@@ -145,6 +145,22 @@ RESULT_AND_GOALS_LINE = 2.5
 ESTIMATED_ODDS_MARGIN = 1.05
 
 # --------------------------------------------------------------------------
+# Fenêtre de matchs évalués
+# --------------------------------------------------------------------------
+# The Odds API peut renvoyer des matchs à venir bien au-delà de quelques
+# jours ; sans limite, CHAQUE match (donc chaque équipe) déclenche
+# l'enrichissement blessures/coupe d'Europe (src/external_data.py, quota
+# API-Football limité + appels Supabase), ce qui gonfle inutilement la
+# consommation de quota et le temps du cycle pour des matchs encore
+# lointains (voir web_app._place_new_bets, qui a déjà planté une fois par
+# accumulation de ces appels). Se limiter aux matchs à J+3 maximum : la
+# fenêtre "glisse" à chaque fetch (throttlé, voir ODDS_FETCH_INTERVAL_HOURS)
+# donc un match plus lointain finit par y entrer de lui-même, plus près de
+# son coup d'envoi — où les infos blessures sont de toute façon plus fiables
+# (compos pas encore connues plusieurs jours à l'avance).
+UPCOMING_MATCH_WINDOW_DAYS = 3
+
+# --------------------------------------------------------------------------
 # Stratégie de paris
 # --------------------------------------------------------------------------
 INITIAL_BANKROLL = 1000.0

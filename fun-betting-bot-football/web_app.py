@@ -273,6 +273,16 @@ def _place_new_bets(state: dict, errors: list) -> int:
         if api_remaining is not None:
             state["odds_api_remaining"] = api_remaining
 
+        # Ne garde que les matchs à J+UPCOMING_MATCH_WINDOW_DAYS max — voir
+        # config.py : évite de consommer du quota API-Football/Supabase sur
+        # des matchs encore lointains à chaque cycle. Un match plus loin
+        # entrera dans la fenêtre de lui-même lors d'un prochain fetch.
+        horizon = _now() + timedelta(days=config.UPCOMING_MATCH_WINDOW_DAYS)
+        upcoming = [
+            m for m in upcoming
+            if (dt := _parse_iso(m.get("commence_time"))) is not None and dt <= horizon
+        ]
+
         try:
             external_data.reset_call_budget()
             european_matches = external_data.fetch_recent_european_matches()

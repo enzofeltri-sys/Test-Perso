@@ -61,7 +61,11 @@ compris) :
    [The Odds API](https://the-odds-api.com) si une clé est configurée
    (free tier ~500 requêtes/mois, suivi du quota restant à chaque appel),
    sinon via `data/upcoming_matches_sample.json` (quelques matchs
-   fictifs, pour que le bot tourne même sans clé).
+   fictifs, pour que le bot tourne même sans clé). Seuls les matchs à
+   J+`UPCOMING_MATCH_WINDOW_DAYS` (3 par défaut) sont évalués/pariés — un
+   match plus lointain entre dans la fenêtre de lui-même à un prochain
+   fetch, sans consommer inutilement le quota blessures/coupe d'Europe
+   (voir section suivante) sur des matchs encore loin dans le temps.
 7. **Web app** (`web_app.py`) : `/tick` règle les tickets dont tous les
    matchs sont finis et en place de nouveaux ; `/` affiche bankroll,
    derniers tickets, dernier backtest et journal — consultable au
