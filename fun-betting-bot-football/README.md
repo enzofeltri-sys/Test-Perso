@@ -34,7 +34,12 @@ compris) :
 2. **Features** (`src/features.py`) : forme récente de chaque équipe sur
    ses 5 derniers matchs (points, buts marqués/encaissés) + repos (jours
    depuis le match précédent), calculées sans fuite de données (uniquement
-   les matchs *antérieurs*).
+   les matchs *antérieurs*). Une équipe reléguée depuis longtemps ou tout
+   juste promue (moins de `MIN_RECENT_MATCHES` matchs dans l'élite sur les
+   `MIN_RECENT_MATCHES_WINDOW_DAYS` derniers jours) est exclue des matchs à
+   venir — ses derniers matchs connus seraient trop vieux/rares pour
+   représenter l'équipe actuelle (observé en prod : EV aberrantes à +200%
+   sur des équipes comme Troyes ou Sunderland).
 3. **Modèle de buts** (`src/model.py`) : deux régressions de Poisson
    (scikit-learn) qui prédisent le nombre de buts ATTENDU de chaque
    équipe. Toutes les probabilités de marché (1X2, double chance,

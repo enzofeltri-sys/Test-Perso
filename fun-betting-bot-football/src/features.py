@@ -117,6 +117,18 @@ def build_features_for_match(
         team_history = long_df[long_df["team"] == team]
         if team_history.empty:
             return None
+
+        # Garde-fou (voir config.MIN_RECENT_MATCHES) : une équipe reléguée
+        # depuis longtemps ou tout juste promue a "techniquement" ses 5
+        # derniers matchs connus (ci-dessous), mais trop vieux/rares pour
+        # représenter l'équipe actuelle — team_history.tail() ne regarde
+        # jamais leur ancienneté. Sans ce filtre, le modèle reçoit des
+        # features silencieusement fausses plutôt qu'un rejet explicite.
+        window_start = match_date - pd.Timedelta(days=config.MIN_RECENT_MATCHES_WINDOW_DAYS)
+        recent_count = (team_history["date"] >= window_start).sum()
+        if recent_count < config.MIN_RECENT_MATCHES:
+            return None
+
         recent = team_history.tail(config.FORM_WINDOW)
         last_date = team_history["date"].iloc[-1]
         rest_days = min((match_date - last_date).days, config.MAX_REST_DAYS)

@@ -113,6 +113,21 @@ ODDS_API_SPORT_KEYS = {
 FORM_WINDOW = 5  # nombre de matchs récents pris en compte pour la forme
 MAX_REST_DAYS = 30  # plafond du nombre de jours de repos pris en compte (trêve estivale, etc.)
 
+# Garde-fou : une équipe reléguée depuis 2+ saisons (ex: Troyes, plus en
+# Ligue 1 depuis 2022-23) ou tout juste promue (ex: Sunderland, ~20 matchs
+# élite au total) a "techniquement" les 5 matchs requis par FORM_WINDOW —
+# via features.build_features_for_match, qui prend les 5 DERNIERS matchs
+# connus quelle que soit leur ancienneté — mais ces matchs sont trop vieux
+# ou trop peu nombreux pour représenter l'équipe actuelle. Ça produit des
+# features silencieusement fausses plutôt qu'un rejet ("Historique
+# insuffisant"), et le modèle en tire des probabilités aberrantes (EV >
+# +200% déjà observé en prod). Exige au moins MIN_RECENT_MATCHES matchs
+# dans l'élite (config.LEAGUES) sur les MIN_RECENT_MATCHES_WINDOW_DAYS
+# derniers jours ; sinon le match est ignoré comme un historique
+# insuffisant classique.
+MIN_RECENT_MATCHES = 10
+MIN_RECENT_MATCHES_WINDOW_DAYS = 365
+
 # --------------------------------------------------------------------------
 # Modèle — buts (Poisson)
 # --------------------------------------------------------------------------
