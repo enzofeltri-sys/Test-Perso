@@ -38,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, jsonify, request
 
 import alerts
-from src import config, data_loader, features, markets, model as model_module, strategy, supabase_state
+from src import config, data_loader, external_data, features, markets, model as model_module, strategy, supabase_state
 from src.team_names import normalize_team_name
 
 app = Flask(__name__)
@@ -188,6 +188,26 @@ def _describe_match_markets(match: dict, probs: dict, candidates: list) -> str:
     return " | ".join(parts)
 
 
+def _describe_match_context(match: dict, european_matches: list) -> str:
+    """Contexte optionnel — blessures (API-Football) et match européen
+    récent (football-data.org) — pour lecture humaine uniquement (voir
+    src/external_data.py : ni l'un ni l'autre n'entraîne le modèle).
+    Chaîne vide si rien d'utile (pas de clé configurée, rien trouvé) :
+    l'appelant n'ajoute alors rien au journal."""
+    parts = []
+    for label, team in (("dom.", match["home_team"]), ("ext.", match["away_team"])):
+        bits = []
+        injuries = external_data.fetch_injury_count(team)
+        if injuries is not None:
+            bits.append(f"{injuries} blessé(s)")
+        euro_date = external_data.played_in_europe_recently(team, european_matches)
+        if euro_date:
+            bits.append(f"a joué en coupe d'Europe le {euro_date[:10]}")
+        if bits:
+            parts.append(f"{label} {team} : " + ", ".join(bits))
+    return " | ".join(parts)
+
+
 def _place_new_bets(state: dict, errors: list) -> int:
     """Place de nouveaux tickets (seuls ou combinés jusqu'à 3 matchs) sur
     les matchs à venir si l'EV le justifie — voir src/strategy.build_tickets.
@@ -241,6 +261,11 @@ def _place_new_bets(state: dict, errors: list) -> int:
         if api_remaining is not None:
             state["odds_api_remaining"] = api_remaining
 
+        try:
+            european_matches = external_data.fetch_recent_european_matches()
+        except Exception:
+            european_matches = []
+
         round_matches = []
         for match in upcoming:
             if supabase_state.leg_exists(match["home_team"], match["away_team"], match["commence_time"]):
@@ -261,9 +286,14 @@ def _place_new_bets(state: dict, errors: list) -> int:
             probs = markets.market_probabilities(lambda_home[0], lambda_away[0])
             candidates = markets.build_candidates(probs, match["odds"])
 
-            supabase_state.log_journal_entry(
-                "bot", _describe_match_markets(match, probs, candidates), {"event": "match_preview"},
-            )
+            message = _describe_match_markets(match, probs, candidates)
+            try:
+                context = _describe_match_context(match, european_matches)
+            except Exception:
+                context = ""
+            if context:
+                message += f" || Contexte : {context}"
+            supabase_state.log_journal_entry("bot", message, {"event": "match_preview"})
             round_matches.append({"match": match, "candidates": candidates})
 
         for ticket in strategy.build_tickets(round_matches):

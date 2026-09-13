@@ -133,14 +133,24 @@ Poisson actuel) + des seuils plus conservateurs + un coupe-circuit
 tombe sous 20% du capital de départ. Aucun pari réel (même virtuel)
 n'avait encore été placé au moment de la découverte.
 
-## Limites connues
+## Blessures et coupe d'Europe — affichage uniquement
 
-- **Blessures et coupe d'Europe/fatigue** : pas encore intégrées. Le
-  repos (jours depuis le dernier match) est calculé sans source
-  supplémentaire ; détecter précisément la participation à une coupe
-  d'Europe demanderait un calendrier européen (piste : football-data.org,
-  non intégré) ; les blessures demandent une clé API-Football (non
-  intégrée non plus — voir DEPLOIEMENT.md).
+Si `API_FOOTBALL_KEY` et/ou `FOOTBALL_DATA_ORG_KEY` sont configurées
+(`src/external_data.py`), le journal (`match_preview`) affiche en plus,
+pour chaque match considéré, le nombre de blessés de chaque équipe
+(API-Football) et si elle a joué une coupe d'Europe dans les 5 derniers
+jours (football-data.org). **Ni l'une ni l'autre n'entraîne le modèle ni
+n'influence automatiquement un pari** : il n'existe pas d'historique de
+blessures ou de calendrier européen passé pour apprendre un coefficient
+fiable là-dessus. C'est de l'information affichée pour que TU juges —
+exactement l'esprit "j'y mettrai ma touche perso" du projet.
+
+⚠️ Schémas de réponse de ces deux API non vérifiés en direct (réseau
+restreint au moment de l'écriture) — le rapprochement des noms d'équipes
+avec football-data.org se fait par sous-chaîne tolérante (pas de mapping
+exact comme `src/team_names.py`), à confirmer une fois déployé.
+
+## Limites connues
 - **Backtest 1X2 uniquement** : football-data.co.uk ne fournit pas de
   cotes over/under historiques, donc le backtest hebdomadaire ne peut
   valider que le marché 1X2, même si le bot EN LIVE peut aussi parier sur

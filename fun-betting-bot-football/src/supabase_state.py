@@ -356,6 +356,42 @@ def get_settled_tickets_chronological(limit: int = 300) -> list:
 
 
 # --------------------------------------------------------------------------
+# Références d'équipes externes (footballbot_team_refs) — cache pour
+# src/external_data.py (id API-Football, nombre de blessés) : un id ne
+# change jamais, et le nombre de blessés n'a pas besoin d'être revérifié
+# à chaque cycle (voir config.INJURY_CACHE_HOURS). Best-effort : une table
+# pas encore migrée ou une erreur réseau ne doit jamais casser un cycle.
+# --------------------------------------------------------------------------
+
+def get_team_ref(team_name: str) -> dict:
+    try:
+        url = f"{_base_url()}/{_table('team_refs')}"
+        resp = requests.get(
+            url, headers=_headers(),
+            params={"team_name": f"eq.{team_name}", "select": "*"}, timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0] if rows else {}
+    except Exception:
+        return {}
+
+
+def save_team_ref(team_name: str, **fields) -> None:
+    """Upsert partiel : seuls les champs passés en kwargs sont écrits/mis à
+    jour (ex: save_team_ref("Arsenal", api_football_id=42))."""
+    try:
+        url = f"{_base_url()}/{_table('team_refs')}"
+        payload = {"team_name": team_name, **fields, "updated_at": datetime.now(timezone.utc).isoformat()}
+        headers = _headers()
+        headers["Prefer"] = "resolution=merge-duplicates"
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        resp.raise_for_status()
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------
 # Journal / erreurs (best-effort, calqué sur trading_bot)
 # --------------------------------------------------------------------------
 

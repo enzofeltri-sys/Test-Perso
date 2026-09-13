@@ -111,6 +111,17 @@ create table if not exists public.footballbot_journal (
   data jsonb
 );
 
+-- Cache pour src/external_data.py (blessures/coupe d'Europe, affichage
+-- uniquement — voir README) : id API-Football et nombre de blessés par
+-- équipe, pour éviter de re-consommer le quota gratuit à chaque cycle.
+create table if not exists public.footballbot_team_refs (
+  team_name text primary key,
+  api_football_id int,
+  injury_count int,
+  injury_checked_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.footballbot_errors (
   id bigserial primary key,
   ts timestamptz not null default now(),
@@ -122,6 +133,7 @@ alter table public.footballbot_matches enable row level security;
 alter table public.footballbot_model enable row level security;
 alter table public.footballbot_bets enable row level security;
 alter table public.footballbot_bet_legs enable row level security;
+alter table public.footballbot_team_refs enable row level security;
 alter table public.footballbot_journal enable row level security;
 alter table public.footballbot_errors enable row level security;
 
@@ -134,6 +146,8 @@ create policy "footballbot_model_all" on public.footballbot_model
 create policy "footballbot_bets_all" on public.footballbot_bets
   for all to anon, authenticated using (true) with check (true);
 create policy "footballbot_bet_legs_all" on public.footballbot_bet_legs
+  for all to anon, authenticated using (true) with check (true);
+create policy "footballbot_team_refs_all" on public.footballbot_team_refs
   for all to anon, authenticated using (true) with check (true);
 create policy "footballbot_journal_all" on public.footballbot_journal
   for all to anon, authenticated using (true) with check (true);
@@ -180,6 +194,8 @@ Récupère ensuite, dans **Project Settings → API** :
    - `SUPABASE_URL`, `SUPABASE_KEY` (mêmes valeurs qu'à l'étape 1)
    - `ODDS_API_KEY` — ta clé The Odds API (optionnel, mais sans elle le bot
      reste en mode "matchs d'exemple" et ne peut jamais régler ses paris)
+   - `API_FOOTBALL_KEY`, `FOOTBALL_DATA_ORG_KEY` — optionnelles, affichage
+     uniquement dans le journal (blessures, coupe d'Europe — voir README)
    - `TABLE_PREFIX` = `footballbot` (déjà dans render.yaml)
 3. Déploie. L'URL ressemble à
    `https://football-betting-bot-xxxx.onrender.com`. Vérifie que `/`

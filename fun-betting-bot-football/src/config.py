@@ -66,6 +66,24 @@ ODDS_COLUMN_PRIORITY = [
 ODDS_API_KEY = os.getenv("ODDS_API_KEY") or None
 ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
 
+# --------------------------------------------------------------------------
+# Sources optionnelles, AFFICHAGE UNIQUEMENT (voir src/external_data.py) —
+# blessures et calendrier européen. Aucune des deux n'entraîne le modèle :
+# pas d'historique exploitable pour ces signaux, donc pas de coefficient
+# appris possible. Elles enrichissent le journal pour une lecture humaine,
+# jamais un ajustement automatique des paris.
+# --------------------------------------------------------------------------
+API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY") or None
+API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
+INJURY_CACHE_HOURS = 24  # évite de re-consommer le quota gratuit (~100/jour) à chaque cycle
+
+FOOTBALL_DATA_ORG_KEY = os.getenv("FOOTBALL_DATA_ORG_KEY") or None
+FOOTBALL_DATA_ORG_BASE_URL = "https://api.football-data.org/v4"
+# Codes compétition football-data.org — non vérifiés en direct (réseau
+# restreint au moment de l'écriture) : à confirmer une fois déployé.
+EURO_COMPETITION_CODES = ["CL", "EL"]
+EURO_LOOKBACK_DAYS = 5  # fenêtre pour détecter un match européen récent
+
 # Clés de sport The Odds API pour nos deux ligues (voir /v4/sports pour la liste complète)
 ODDS_API_SPORT_KEYS = {
     "E0": "soccer_epl",
