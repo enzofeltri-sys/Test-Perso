@@ -777,9 +777,10 @@ def _fmt_ts(ts_str):
 # n'existe pas ailleurs, et l'inverse n'est pas dangereux non plus (un
 # bot pas encore migré affiche juste "aucune donnée pour l'instant").
 BOT_REGISTRY = [
-    {"prefix": "tradingbot", "label": "Bot #1 — BTC/ETH/SOL", "url": "https://test-perso.onrender.com"},
-    {"prefix": "altbot", "label": "Bot #2 — BNB/XRP/LINK", "url": "https://trading-bot-altcoins.onrender.com"},
-    {"prefix": "microbot", "label": "Bot #3 — 24 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com"},
+    {"prefix": "tradingbot", "label": "Bot #1 — BTC/ETH/SOL", "url": "https://test-perso.onrender.com", "kind": "trading"},
+    {"prefix": "altbot", "label": "Bot #2 — BNB/XRP/LINK", "url": "https://trading-bot-altcoins.onrender.com", "kind": "trading"},
+    {"prefix": "microbot", "label": "Bot #3 — 24 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com", "kind": "trading"},
+    {"prefix": "footballbot", "label": "Bot #4 — paris football", "url": "https://football-betting-bot.onrender.com", "kind": "betting"},
 ]
 
 # Fenêtres du graphique combiné de /all : (clé, libellé, delta depuis
@@ -800,31 +801,44 @@ CHART_RANGES = [
 DEFAULT_CHART_RANGE = "tout"
 
 
-def _fetch_bot_summary(prefix: str) -> dict:
+def _rest_get(prefix: str, table: str, params: dict):
+    try:
+        resp = requests.get(f"{db._base_url()}/{prefix}_{table}", headers=db._headers(),
+                             params=params, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _fetch_bot_summary(prefix: str, kind: str = "trading") -> dict:
     """Lit l'essentiel d'UN bot par son préfixe de table, en lecture seule,
     directement en REST — jamais via supabase_state (dont TABLE_PREFIX ne
     vaut que pour le bot de CE processus, pas pour lire les tables d'un
     AUTRE bot). Best-effort partout : une table pas encore migrée ne doit
     jamais faire échouer la page pour les bots qui, eux, existent déjà.
 
-    /all garde le résumé chiffré (cash, positions ouvertes/clôturées) —
-    utile en un coup d'oeil sur une page qui compare 3 bots — mais pas le
-    détail trade-par-trade ni le journal : ça, c'est déjà sur la page
-    propre à chaque bot, à un clic, et le dupliquer ici serait du bruit.
-    `trades` (croissant, jusqu'à 500) sert donc à la fois au compte des
-    positions clôturées (les ventes) et à la courbe d'équity du graphique."""
-    def _get(table, params):
-        try:
-            resp = requests.get(f"{db._base_url()}/{prefix}_{table}", headers=db._headers(),
-                                 params=params, timeout=10)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception:
-            return None
+    Deux schémas de données coexistent (voir BOT_REGISTRY[*]["kind"]) : les
+    bots de trading (cash + positions + trades) et le bot de paris football
+    (bankroll + paris H/D/A). Chacun a sa propre fonction ci-dessous, mais
+    toutes deux retournent la même forme ({found, healthy, stats,
+    equity_points, ...}) pour que le reste de /all (graphique, carte) reste
+    générique et n'ait jamais besoin de savoir quel bot est lequel."""
+    if kind == "betting":
+        return _fetch_betting_bot_summary(prefix)
+    return _fetch_trading_bot_summary(prefix)
 
-    state_rows = _get("state", {"id": "eq.default", "select": "*"})
+
+def _fetch_trading_bot_summary(prefix: str) -> dict:
+    """/all garde le résumé chiffré (cash, positions ouvertes/clôturées) —
+    utile en un coup d'oeil sur une page qui compare plusieurs bots — mais
+    pas le détail trade-par-trade ni le journal : ça, c'est déjà sur la
+    page propre à chaque bot, à un clic, et le dupliquer ici serait du
+    bruit. `trades` (croissant, jusqu'à 500) sert donc à la fois au compte
+    des positions clôturées (les ventes) et à la courbe d'équity du graphique."""
+    state_rows = _rest_get(prefix, "state", {"id": "eq.default", "select": "*"})
     state = (state_rows or [{}])[0] if state_rows else {}
-    trades_asc = _get("trades", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
+    trades_asc = _rest_get(prefix, "trades", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
 
     positions = _normalize_positions((state or {}).get("positions"))
     healthy = state is not None and not (state.get("daily_tripped_today") or state.get("total_dd_tripped"))
@@ -833,17 +847,45 @@ def _fetch_bot_summary(prefix: str) -> dict:
         "found": state_rows is not None,
         "healthy": healthy,
         "total_dd_tripped": bool((state or {}).get("total_dd_tripped")),
-        "cash": (state or {}).get("cash"),
         # nombre de POSITIONS ouvertes, pas de paires — une paire peut en
         # porter plusieurs à la fois depuis le rachat (bot #3, voir
         # max_positions_per_symbol), donc len(positions) sous-compterait.
-        "open_positions": sum(len(v) for v in positions.values()),
-        "closed_positions": sum(1 for t in trades_asc if t.get("side") == "sell"),
-        # (ts brut, equity_after) — matière première du graphique, jamais
+        "stats": [
+            {"label": "Cash", "value": f"${state.get('cash'):.2f}" if state.get("cash") is not None else "—"},
+            {"label": "Positions ouvertes", "value": sum(len(v) for v in positions.values())},
+            {"label": "Positions clôturées", "value": sum(1 for t in trades_asc if t.get("side") == "sell")},
+        ],
+        # (ts brut, valeur) — matière première du graphique, jamais
         # affiché directement ; on garde le ts ISO ici, l'analyse (parsing,
         # échelle) est isolée dans _build_equity_chart_svg pour rester testable.
         "equity_points": [(t["ts"], t["equity_after"]) for t in trades_asc
                            if t.get("ts") and t.get("equity_after") is not None],
+    }
+
+
+def _fetch_betting_bot_summary(prefix: str) -> dict:
+    """Équivalent de _fetch_trading_bot_summary pour le bot de paris
+    football (schéma différent : bankroll + paris H/D/A au lieu de
+    cash + positions). Toujours en lecture seule, best-effort."""
+    state_rows = _rest_get(prefix, "state", {"id": "eq.default", "select": "*"})
+    state = (state_rows or [{}])[0] if state_rows else {}
+    bets_asc = _rest_get(prefix, "bets", {"select": "*", "order": "ts.asc", "limit": "500"}) or []
+
+    settled = [b for b in bets_asc if b.get("status") in ("won", "lost")]
+    pending = [b for b in bets_asc if b.get("status") == "pending"]
+    win_rate = (sum(1 for b in settled if b["status"] == "won") / len(settled) * 100) if settled else None
+
+    return {
+        "found": state_rows is not None,
+        "healthy": True,  # pas de coupe-circuit sur ce bot : "healthy" = "en ligne"
+        "total_dd_tripped": False,
+        "stats": [
+            {"label": "Bankroll", "value": f"${state.get('bankroll'):.2f}" if state.get("bankroll") is not None else "—"},
+            {"label": "Paris en attente", "value": len(pending)},
+            {"label": "Paris réglés", "value": f"{len(settled)} ({win_rate:.0f}% gagnés)" if settled else "0"},
+        ],
+        "equity_points": [(b["settled_at"], b["bankroll_after"]) for b in settled
+                           if b.get("settled_at") and b.get("bankroll_after") is not None],
     }
 
 
@@ -909,9 +951,9 @@ def _build_equity_chart_svg(series: list) -> str:
         return H - PAD_B - frac * (H - PAD_T - PAD_B)
 
     parts = [f'<svg viewBox="0 0 {W} {H}" width="100%" role="img" '
-             f'aria-label="Évolution du capital des {len(active)} bot(s) au fil des trades">']
+             f'aria-label="Évolution du capital des {len(active)} bot(s) au fil des opérations">']
 
-    # ligne de référence : le capital de départ commun aux 3 bots (1000$).
+    # ligne de référence : le capital de départ commun à tous les bots (1000$).
     # Pas d'étiquette texte inline ici (superposition avec les courbes qui
     # démarrent toutes près de cette ligne) — le sens de la ligne est
     # expliqué dans la légende de la carte (chart-sub).
@@ -972,7 +1014,7 @@ def _build_equity_chart_svg(series: list) -> str:
 
 
 ALL_PAGE = """<!doctype html>
-<title>Vue d'ensemble — 3 bots</title>
+<title>Vue d'ensemble — 4 bots</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -984,19 +1026,19 @@ ALL_PAGE = """<!doctype html>
     /* palette catégorielle validée (dataviz skill) — 3 premiers slots,
        les seuls qui passent le contrôle CVD/contraste toutes paires
        confondues en clair ET en sombre : bleu / orange / aqua */
-    --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a;
+    --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; --series-4:#8558d3;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
       --rule:#333432; --accent:#CB9855; --green:#6FAE87; --red:#D08076; --card:#1F2022;
-      --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+      --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#9a72dd;
     }
   }
   :root[data-theme="dark"]{
     --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
     --rule:#333432; --accent:#CB9855; --green:#6FAE87; --red:#D08076; --card:#1F2022;
-    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#9a72dd;
   }
   *{ box-sizing:border-box; margin:0; }
   body{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }
@@ -1077,11 +1119,11 @@ ALL_PAGE = """<!doctype html>
 
 <div class="wrap">
   <p class="kicker">Vue d'ensemble</p>
-  <h1>Les 3 bots</h1>
+  <h1>Les 4 bots</h1>
 
   <div class="chart-card">
     <h2>Évolution du capital</h2>
-    <p class="chart-sub">Un point par trade réellement exécuté — pas une estimation entre deux trades. La ligne fine horizontale marque les 1000$ de départ commun aux 3 bots.</p>
+    <p class="chart-sub">Un point par opération réellement exécutée (trade, ou pari réglé) — pas une estimation entre deux points. La ligne fine horizontale marque les 1000 de départ commun à tous les bots.</p>
     {% if has_any_data %}
       <div id="chart-body">
         <div class="legend">
@@ -1129,9 +1171,9 @@ ALL_PAGE = """<!doctype html>
     </div>
     {% if b.summary.found %}
       <div class="stats-row">
-        <div class="stat"><div class="n">Cash</div><div class="v">{{ '$%.2f'|format(b.summary.cash) if b.summary.cash is not none else '—' }}</div></div>
-        <div class="stat"><div class="n">Positions ouvertes</div><div class="v">{{ b.summary.open_positions }}</div></div>
-        <div class="stat"><div class="n">Positions clôturées</div><div class="v">{{ b.summary.closed_positions }}</div></div>
+        {% for s in b.summary.stats %}
+        <div class="stat"><div class="n">{{ s.label }}</div><div class="v">{{ s.value }}</div></div>
+        {% endfor %}
       </div>
     {% endif %}
     {% if not b.summary.found %}
@@ -1250,11 +1292,11 @@ document.querySelectorAll(".range-tab").forEach(function (btn) {
 @app.route("/all")
 def all_bots():
     try:
-        color_vars = ["--series-1", "--series-2", "--series-3"]
+        color_vars = ["--series-1", "--series-2", "--series-3", "--series-4"]
         bots = []
         chart_series = []
         for b, color_var in zip(BOT_REGISTRY, color_vars):
-            summary = _fetch_bot_summary(b["prefix"])
+            summary = _fetch_bot_summary(b["prefix"], b.get("kind", "trading"))
             bots.append({"label": b["label"], "url": b["url"], "summary": summary, "color_var": color_var})
             points = []
             for ts_raw, equity in summary["equity_points"]:

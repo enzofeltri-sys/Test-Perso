@@ -25,6 +25,7 @@ minutes par UptimeRobot.
 
 import os
 import html
+import math
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request
@@ -245,11 +246,12 @@ def status():
         pass
 
     recent_bets = _safe_call(supabase_state.get_recent_bets, 15, default=[])
+    settled_bets = _safe_call(supabase_state.get_settled_bets_chronological, 300, default=[])
     journal = _safe_call(supabase_state.get_recent_journal, 15, default=[])
     errors = _safe_call(supabase_state.get_recent_errors, 5, default=[])
     model_row = _safe_call(supabase_state.load_model, default={})
 
-    return _render_status_page(bankroll, recent_bets, journal, errors, model_row)
+    return _render_status_page(bankroll, recent_bets, settled_bets, journal, errors, model_row)
 
 
 def _safe_call(fn, *args, default=None):
@@ -282,31 +284,141 @@ def alert_test():
     }), 200
 
 
-def _render_status_page(bankroll, recent_bets, journal, errors, model_row) -> str:
+def _nice_step(raw_step: float) -> float:
+    """Arrondit un pas d'axe au nombre rond juste au-dessus (1/2/5 × 10^n) —
+    évite des graduations comme 733,4 sur l'axe Y."""
+    if raw_step <= 0:
+        return 1.0
+    magnitude = 10 ** math.floor(math.log10(raw_step))
+    for mult in (1, 2, 5, 10):
+        step = mult * magnitude
+        if step >= raw_step:
+            return step
+    return 10 * magnitude
+
+
+def _build_bankroll_chart_svg(points: list) -> str:
+    """Graphique ligne SVG autonome (aucun JS/dépendance externe) de
+    l'évolution de la bankroll, un point par pari réglé. points :
+    [(datetime, float), ...] déjà triés croissants. Retourne "" si moins
+    de 2 points (rien à tracer)."""
+    if len(points) < 2:
+        return ""
+
+    W, H = 640, 220
+    PAD_L, PAD_R, PAD_T, PAD_B = 46, 74, 16, 28
+
+    t_min, t_max = points[0][0], points[-1][0]
+    if t_max == t_min:
+        t_max = t_min + timedelta(hours=1)
+
+    values = [v for _, v in points] + [config.INITIAL_BANKROLL]
+    v_min, v_max = min(values), max(values)
+    v_range = max(v_max - v_min, 1.0)
+    v_pad = v_range * 0.15
+    v_min, v_max = v_min - v_pad, v_max + v_pad
+
+    def x_of(t):
+        frac = (t - t_min).total_seconds() / (t_max - t_min).total_seconds()
+        return PAD_L + frac * (W - PAD_L - PAD_R)
+
+    def y_of(v):
+        frac = (v - v_min) / (v_max - v_min)
+        return H - PAD_B - frac * (H - PAD_T - PAD_B)
+
+    parts = [f'<svg viewBox="0 0 {W} {H}" width="100%" role="img" '
+             f'aria-label="Évolution de la bankroll au fil des paris réglés">']
+
+    ref_y = y_of(config.INITIAL_BANKROLL)
+    parts.append(f'<line x1="{PAD_L}" y1="{ref_y:.1f}" x2="{W - PAD_R}" y2="{ref_y:.1f}" '
+                 f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="3,3"/>')
+
+    tick_step = _nice_step((v_max - v_min) / 4)
+    tick = tick_step * round(v_min / tick_step)
+    while tick <= v_max:
+        if tick > v_min:
+            y = y_of(tick)
+            parts.append(f'<line x1="{PAD_L}" y1="{y:.1f}" x2="{W - PAD_R}" y2="{y:.1f}" '
+                         f'stroke="var(--rule)" stroke-width="1" opacity="0.5"/>')
+            parts.append(f'<text x="{PAD_L - 6:.1f}" y="{y + 3:.1f}" font-size="9" fill="var(--text-faint)" '
+                         f'text-anchor="end" font-family="IBM Plex Mono, monospace">{tick:,.0f}</text>')
+        tick += tick_step
+
+    for frac, anchor in ((0.0, "start"), (0.5, "middle"), (1.0, "end")):
+        t = t_min + (t_max - t_min) * frac
+        parts.append(f'<text x="{x_of(t):.1f}" y="{H - 8}" font-size="9" fill="var(--text-faint)" '
+                     f'text-anchor="{anchor}" font-family="IBM Plex Mono, monospace">{t.strftime("%d/%m")}</text>')
+
+    poly = " ".join(f"{x_of(t):.1f},{y_of(v):.1f}" for t, v in points)
+    parts.append(f'<polyline points="{poly}" fill="none" stroke="var(--series-4)" '
+                 f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+
+    last_t, last_v = points[-1]
+    lx, ly = x_of(last_t), y_of(last_v)
+    parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="7" fill="var(--card)"/>')
+    parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var(--series-4)"/>')
+    parts.append(f'<text x="{lx + 10:.1f}" y="{ly + 3:.1f}" font-size="11" fill="var(--text)" '
+                 f'font-family="IBM Plex Sans, sans-serif">{last_v:,.0f}</text>')
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _render_status_page(bankroll, recent_bets, settled_bets, journal, errors, model_row) -> str:
     label = os.environ.get("BOT_LABEL") or "bot de paris football virtuels"
     metrics = (model_row or {}).get("backtest_metrics") or {}
-    trained_at = (model_row or {}).get("trained_at") or "jamais"
+    trained_at = (model_row or {}).get("trained_at") or None
 
     def esc(value) -> str:
         return html.escape(str(value)) if value is not None else ""
 
-    bets_rows = "".join(
-        f"<tr><td>{esc(b.get('commence_time', ''))[:16]}</td><td>{esc(b.get('league'))}</td>"
-        f"<td>{esc(b.get('home_team'))} - {esc(b.get('away_team'))}</td>"
-        f"<td>{esc(b.get('selection'))} @ {esc(b.get('odds'))}</td>"
-        f"<td>{esc(b.get('stake'))}</td>"
-        f"<td>{esc(b.get('status'))}</td>"
-        f"<td>{esc(b.get('pnl') if b.get('pnl') is not None else '')}</td></tr>"
+    def fmt_ts(value) -> str:
+        dt = _parse_iso(value) if value else None
+        return dt.strftime("%d/%m %H:%M") if dt else "—"
+
+    chart_points = []
+    for b in settled_bets:
+        dt = _parse_iso(b.get("settled_at"))
+        if dt is not None and b.get("bankroll_after") is not None:
+            chart_points.append((dt, float(b["bankroll_after"])))
+    chart_svg = _build_bankroll_chart_svg(chart_points)
+
+    pnl_since_start = bankroll - config.INITIAL_BANKROLL
+    roi_live_pct = pnl_since_start / config.INITIAL_BANKROLL * 100
+
+    bet_cards = "".join(
+        f'<div class="bet-row"><div class="bet-match">{esc(b.get("home_team"))} – {esc(b.get("away_team"))} '
+        f'<span class="bet-league">{esc(b.get("league"))}</span></div>'
+        f'<div class="bet-meta"><span class="pill pill-{esc(b.get("status"))}">{esc(b.get("selection"))} @ {esc(b.get("odds"))}</span>'
+        f'<span class="mono">mise {esc(b.get("stake"))}</span>'
+        f'<span class="mono">{fmt_ts(b.get("commence_time"))}</span></div></div>'
         for b in recent_bets
-    ) or "<tr><td colspan='7'>Aucun pari pour l'instant.</td></tr>"
+    ) or '<p class="empty">Aucun pari pour l\'instant.</p>'
 
     journal_items = "".join(
-        f"<li><b>{esc(j.get('ts', ''))[:16]}</b> [{esc(j.get('author'))}] {esc(j.get('message'))}</li>"
-        for j in journal
-    ) or "<li>Rien pour l'instant.</li>"
+        f'<li><span class="mono">{fmt_ts(j.get("ts"))}</span> {esc(j.get("message"))}</li>'
+        for j in journal[:8]
+    ) or '<li class="empty">Rien pour l\'instant.</li>'
 
-    errors_items = "".join(f"<li>{esc(e.get('ts', ''))[:16]} — {esc(e.get('message'))}</li>" for e in errors)
-    errors_block = f"<h2>Erreurs récentes</h2><ul>{errors_items}</ul>" if errors else ""
+    errors_block = ""
+    if errors:
+        errors_items = "".join(f'<li><span class="mono">{fmt_ts(e.get("ts"))}</span> {esc(e.get("message"))}</li>' for e in errors)
+        errors_block = f'<div class="card"><h2>Erreurs récentes</h2><ul class="list">{errors_items}</ul></div>'
+
+    chart_block = (
+        f'<div class="chart-wrap">{chart_svg}</div>'
+        if chart_svg else
+        '<p class="empty">La courbe apparaîtra dès le premier pari réglé.</p>'
+    )
+
+    trained_line = (
+        f'Entraîné le {esc(trained_at)[:16].replace("T", " ")} UTC — backtest : '
+        f'ROI {esc(metrics.get("roi_pct"))}% · yield {esc(metrics.get("yield_pct"))}% · '
+        f'{esc(metrics.get("num_bets"))} paris · win rate {esc(metrics.get("win_rate"))}% · '
+        f'drawdown max {esc(metrics.get("max_drawdown_pct"))}%'
+        if trained_at else
+        "Pas encore de modèle entraîné — voir DEPLOIEMENT.md."
+    )
 
     return f"""<!doctype html>
 <html lang="fr">
@@ -314,34 +426,92 @@ def _render_status_page(bankroll, recent_bets, journal, errors, model_row) -> st
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(label)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-body {{ font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 16px; background:#0f1115; color:#e6e6e6; }}
-h1 {{ font-size: 1.3rem; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
-td, th {{ border-bottom: 1px solid #333; padding: 6px 8px; text-align: left; }}
-.bankroll {{ font-size: 2rem; font-weight: bold; }}
-.disclaimer {{ color: #f0ad4e; margin: 12px 0; }}
-ul {{ padding-left: 18px; font-size: 0.85rem; }}
+:root{{
+  --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
+  --rule:#DBDBD6; --card:#EBEBE7; --series-4:#8558d3;
+  --pill-won-bg:#e4f1e8; --pill-won-text:#3E7A52;
+  --pill-lost-bg:#f6e6e4; --pill-lost-text:#A3453A;
+  --pill-pending-bg:#eeeae4; --pill-pending-text:#767671;
+}}
+@media (prefers-color-scheme: dark){{
+  :root{{
+    --bg:#17181A; --text:#E7E6E1; --text-muted:#8E8E88; --text-faint:#5C5D59;
+    --rule:#333432; --card:#1F2022; --series-4:#9a72dd;
+    --pill-won-bg:#1c2c22; --pill-won-text:#6FAE87;
+    --pill-lost-bg:#2c1e1c; --pill-lost-text:#D08076;
+    --pill-pending-bg:#232323; --pill-pending-text:#8E8E88;
+  }}
+}}
+*{{ box-sizing:border-box; margin:0; }}
+body{{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }}
+.wrap{{ max-width:640px; margin:0 auto; padding:40px 20px 64px; }}
+.mono{{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-variant-numeric:tabular-nums; }}
+.kicker{{ font-family:"IBM Plex Mono", monospace; font-size:0.7rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-faint); margin-bottom:8px; }}
+h1{{ font-family:"Fraunces", serif; font-weight:500; font-size:1.7rem; margin-bottom:4px; }}
+.disclaimer{{ font-size:0.8rem; color:var(--text-muted); margin-bottom:28px; }}
+.card{{ background:var(--card); border-radius:14px; padding:20px 22px; margin-bottom:18px; }}
+.bankroll-value{{ font-family:"IBM Plex Mono", monospace; font-size:2.4rem; font-weight:500; margin:4px 0 2px; }}
+.bankroll-delta{{ font-size:0.85rem; font-weight:500; }}
+.bankroll-delta.pos{{ color:#3E7A52; }}
+.bankroll-delta.neg{{ color:#A3453A; }}
+.chart-wrap{{ margin-top:14px; }}
+.empty{{ font-size:0.82rem; color:var(--text-faint); }}
+h2{{ font-size:0.92rem; font-weight:500; margin-bottom:12px; }}
+.sub{{ font-size:0.78rem; color:var(--text-muted); margin-bottom:14px; }}
+.bet-row{{ padding:10px 0; border-bottom:1px solid var(--rule); }}
+.bet-row:last-child{{ border-bottom:none; }}
+.bet-match{{ font-size:0.92rem; font-weight:500; margin-bottom:4px; }}
+.bet-league{{ font-size:0.7rem; color:var(--text-faint); font-weight:400; }}
+.bet-meta{{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:0.78rem; color:var(--text-muted); }}
+.pill{{ padding:2px 8px; border-radius:999px; font-size:0.72rem; font-weight:500; }}
+.pill-won{{ background:var(--pill-won-bg); color:var(--pill-won-text); }}
+.pill-lost{{ background:var(--pill-lost-bg); color:var(--pill-lost-text); }}
+.pill-pending{{ background:var(--pill-pending-bg); color:var(--pill-pending-text); }}
+.list{{ list-style:none; font-size:0.82rem; }}
+.list li{{ padding:6px 0; border-bottom:1px solid var(--rule); display:flex; gap:10px; }}
+.list li:last-child{{ border-bottom:none; }}
+.list li .mono{{ color:var(--text-faint); flex-shrink:0; }}
+footer{{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align:center; }}
 </style>
 </head>
 <body>
-<h1>⚽ {esc(label)}</h1>
-<p class="disclaimer">Paris 100% virtuels — aucun argent réel n'est en jeu.</p>
-<p>Bankroll actuelle</p>
-<div class="bankroll">{bankroll:.2f}</div>
-<h2>Dernier modèle entraîné</h2>
-<p>Entraîné le : {esc(trained_at)[:19]}</p>
-<p>Backtest — ROI: {esc(metrics.get('roi_pct'))}% · Yield: {esc(metrics.get('yield_pct'))}% ·
-Paris: {esc(metrics.get('num_bets'))} · Win rate: {esc(metrics.get('win_rate'))}% ·
-Drawdown max: {esc(metrics.get('max_drawdown_pct'))}%</p>
-<h2>Derniers paris</h2>
-<table>
-<tr><th>Coup d'envoi</th><th>Ligue</th><th>Match</th><th>Sélection</th><th>Mise</th><th>Statut</th><th>P&L</th></tr>
-{bets_rows}
-</table>
-<h2>Journal</h2>
-<ul>{journal_items}</ul>
-{errors_block}
+<div class="wrap">
+  <p class="kicker">⚽ Paris virtuels</p>
+  <h1>{esc(label)}</h1>
+  <p class="disclaimer">100% éducatif — aucun argent réel n'est en jeu, aucun pari réel n'est placé.</p>
+
+  <div class="card">
+    <div class="kicker">Bankroll</div>
+    <div class="bankroll-value">{bankroll:,.2f}</div>
+    <div class="bankroll-delta {'pos' if pnl_since_start >= 0 else 'neg'}">
+      {'+' if pnl_since_start >= 0 else ''}{pnl_since_start:,.2f} depuis le départ ({roi_live_pct:+.1f}%)
+    </div>
+    {chart_block}
+  </div>
+
+  <div class="card">
+    <h2>Dernier modèle entraîné</h2>
+    <p class="sub">{trained_line}</p>
+  </div>
+
+  <div class="card">
+    <h2>Derniers paris</h2>
+    {bet_cards}
+  </div>
+
+  <div class="card">
+    <h2>Journal</h2>
+    <ul class="list">{journal_items}</ul>
+  </div>
+
+  {errors_block}
+
+  <footer>Lecture seule — <span class="mono">/tick</span> déclenche un cycle (pensé pour UptimeRobot).</footer>
+</div>
 </body>
 </html>"""
 

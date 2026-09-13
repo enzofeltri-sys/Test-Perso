@@ -268,6 +268,23 @@ def get_recent_bets(limit: int = 10) -> list:
     return resp.json()
 
 
+def get_settled_bets_chronological(limit: int = 300) -> list:
+    """Paris réglés (won/lost), du plus ancien au plus récent — matière
+    première de la courbe de bankroll de la page de statut. Best-effort :
+    [] si Supabase est injoignable plutôt que de casser la page."""
+    try:
+        url = f"{_base_url()}/{_table('bets')}"
+        resp = requests.get(
+            url, headers=_headers(),
+            params={"status": "in.(won,lost)", "select": "*", "order": "settled_at.asc", "limit": str(limit)},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return []
+
+
 # --------------------------------------------------------------------------
 # Journal / erreurs (best-effort, calqué sur trading_bot)
 # --------------------------------------------------------------------------
