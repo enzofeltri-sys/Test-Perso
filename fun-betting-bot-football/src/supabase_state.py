@@ -355,6 +355,40 @@ def get_settled_tickets_chronological(limit: int = 300) -> list:
         return []
 
 
+def get_api_football_remaining() -> int | None:
+    """Dernier quota journalier restant vu pour API-Football (en-tête
+    x-ratelimit-requests-remaining, voir src/external_data.py). None tant
+    qu'aucun appel n'a encore été fait, ou si la ligne d'état n'existe pas
+    encore (best-effort, jamais bloquant)."""
+    try:
+        url = f"{_base_url()}/{_table('state')}"
+        resp = requests.get(
+            url, headers=_headers(),
+            params={"id": f"eq.{STATE_ID}", "select": "api_football_remaining"}, timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0].get("api_football_remaining") if rows else None
+    except Exception:
+        return None
+
+
+def save_api_football_remaining(value: int) -> None:
+    """PATCH (pas d'upsert) : si footballbot_state n'a pas encore de ligne
+    (tout premier tick, avant que run_tick() ait fini d'écrire la
+    bankroll), ce PATCH ne fait simplement rien plutôt que de violer la
+    contrainte not-null sur bankroll en tentant un insert partiel."""
+    try:
+        url = f"{_base_url()}/{_table('state')}"
+        resp = requests.patch(
+            url, headers=_headers(), params={"id": f"eq.{STATE_ID}"},
+            json={"api_football_remaining": value}, timeout=10,
+        )
+        resp.raise_for_status()
+    except Exception:
+        pass
+
+
 # --------------------------------------------------------------------------
 # Références d'équipes externes (footballbot_team_refs) — cache pour
 # src/external_data.py (id API-Football, nombre de blessés) : un id ne

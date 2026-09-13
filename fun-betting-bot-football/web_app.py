@@ -200,7 +200,11 @@ def _describe_match_context(match: dict, european_matches: list) -> str:
         injuries = external_data.fetch_injury_count(team)
         if injuries is not None:
             bits.append(f"{injuries} blessé(s)")
-        euro_date = external_data.played_in_europe_recently(team, european_matches)
+        # Deux avis indépendants sur la coupe d'Europe : API-Football (par
+        # id d'équipe, plus fiable) en premier, football-data.org (par
+        # rapprochement de nom) en repli si le premier ne trouve rien.
+        euro_date = external_data.fetch_recent_uefa_fixture(team) or \
+            external_data.played_in_europe_recently(team, european_matches)
         if euro_date:
             bits.append(f"a joué en coupe d'Europe le {euro_date[:10]}")
         if bits:

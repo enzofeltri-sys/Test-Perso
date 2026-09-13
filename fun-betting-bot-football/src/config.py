@@ -76,6 +76,16 @@ ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
 API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY") or None
 API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
 INJURY_CACHE_HOURS = 24  # évite de re-consommer le quota gratuit (~100/jour) à chaque cycle
+# Filet de sécurité indépendant de tout calcul de coût par endpoint :
+# API-Football renvoie le quota JOURNALIER restant dans l'en-tête
+# x-ratelimit-requests-remaining à CHAQUE réponse. Sous ce seuil, on
+# arrête tout nouvel appel jusqu'au lendemain (voir save_api_football_remaining).
+API_FOOTBALL_MIN_REMAINING = 5
+# IDs de compétition API-Football pour la coupe d'Europe — usuels mais non
+# vérifiés en direct (réseau restreint au moment de l'écriture) : à
+# confirmer une fois déployé (le journal loggue les ids rencontrés sur
+# repli en cas de doute — voir src/external_data.py).
+API_FOOTBALL_UEFA_LEAGUE_IDS = {2: "Champions League", 3: "Europa League", 848: "Conference League"}
 
 FOOTBALL_DATA_ORG_KEY = os.getenv("FOOTBALL_DATA_ORG_KEY") or None
 FOOTBALL_DATA_ORG_BASE_URL = "https://api.football-data.org/v4"

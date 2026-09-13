@@ -40,6 +40,7 @@ create table if not exists public.footballbot_state (
   last_odds_fetch_at timestamptz,
   last_scores_fetch_at timestamptz,
   odds_api_remaining int,
+  api_football_remaining int,
   updated_at timestamptz not null default now()
 );
 

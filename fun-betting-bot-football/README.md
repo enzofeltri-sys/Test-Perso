@@ -145,10 +145,17 @@ blessures ou de calendrier européen passé pour apprendre un coefficient
 fiable là-dessus. C'est de l'information affichée pour que TU juges —
 exactement l'esprit "j'y mettrai ma touche perso" du projet.
 
-⚠️ Schémas de réponse de ces deux API non vérifiés en direct (réseau
-restreint au moment de l'écriture) — le rapprochement des noms d'équipes
-avec football-data.org se fait par sous-chaîne tolérante (pas de mapping
-exact comme `src/team_names.py`), à confirmer une fois déployé.
+API-Football est utilisé pour les deux signaux (blessures ET détection
+"a joué en coupe d'Europe" via `/fixtures?team=<id>&last=5`, plus fiable
+qu'un rapprochement par nom puisque basé sur l'id d'équipe déjà résolu) —
+conforme à sa doc officielle : vérification du champ `errors` à chaque
+réponse, suivi du quota journalier (`x-ratelimit-requests-remaining`,
+100/jour en free tier) avec arrêt automatique des appels sous le seuil.
+football-data.org sert de second avis indépendant pour la coupe d'Europe
+(rapprochement par sous-chaîne, moins fiable, à confirmer une fois
+déployé) — les IDs de compétition UEFA d'API-Football
+(`config.API_FOOTBALL_UEFA_LEAGUE_IDS`) sont les IDs usuels mais non
+vérifiés en direct non plus.
 
 ## Limites connues
 - **Backtest 1X2 uniquement** : football-data.co.uk ne fournit pas de

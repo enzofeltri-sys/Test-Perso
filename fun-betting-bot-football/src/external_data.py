@@ -1,9 +1,14 @@
 """
 Sources de données optionnelles, AFFICHAGE UNIQUEMENT :
 
-- API-Football (blessures) — nécessite API_FOOTBALL_KEY.
-- football-data.org (calendrier Ligue des Champions/Europa, pour repérer
-  un match européen récent) — nécessite FOOTBALL_DATA_ORG_KEY.
+- API-Football (blessures + calendrier Ligue des Champions/Europa) —
+  nécessite API_FOOTBALL_KEY. Base URL, auth (x-apisports-key), structure
+  de réponse ({get, parameters, errors, results, paging, response}) et
+  en-têtes de quota (x-ratelimit-requests-remaining par jour,
+  X-Ratelimit-Remaining par minute) conformes à la doc officielle.
+- football-data.org (calendrier européen, second avis) — nécessite
+  FOOTBALL_DATA_ORG_KEY. Rapprochement par sous-chaîne (pas d'id), moins
+  fiable qu'API-Football mais indépendant.
 
 Aucune des deux ne peut ENTRAÎNER le modèle : il n'existe pas d'historique
 de blessures ni de calendrier européen passé exploitable ici, donc pas de
@@ -12,10 +17,9 @@ football-data.co.uk). Ces fonctions servent uniquement à enrichir le
 journal (voir web_app._describe_match_context) pour une lecture humaine —
 c'est TOI qui juges, jamais un ajustement automatique des paris.
 
-⚠️ Schémas de réponse non vérifiés en direct (réseau restreint au moment
-de l'écriture) — tout est défensif : une erreur ou un format inattendu
-renvoie None/[] plutôt que de faire planter un cycle. À confirmer une
-fois déployé (voir DEPLOIEMENT.md).
+⚠️ Les IDs de ligue UEFA (config.API_FOOTBALL_UEFA_LEAGUE_IDS) et le
+rapprochement de noms football-data.org sont non vérifiés en direct
+(réseau restreint au moment de l'écriture) — à confirmer une fois déployé.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -29,9 +33,48 @@ def _api_football_headers() -> dict:
     return {"x-apisports-key": config.API_FOOTBALL_KEY}
 
 
+def _api_football_quota_ok() -> bool:
+    remaining = supabase_state.get_api_football_remaining()
+    return remaining is None or remaining >= config.API_FOOTBALL_MIN_REMAINING
+
+
+def _api_football_get(path: str, params: dict) -> list | None:
+    """GET générique vers API-Football : vérifie le quota AVANT l'appel,
+    suit x-ratelimit-requests-remaining APRÈS, et vérifie le champ
+    `errors` de la réponse (non vide = erreur métier même en HTTP 200,
+    d'après la doc officielle) avant de faire confiance à `response`.
+    None sur tout problème (quota, réseau, erreur API) plutôt que de
+    planter l'appelant."""
+    if not config.API_FOOTBALL_KEY or not _api_football_quota_ok():
+        return None
+
+    try:
+        resp = requests.get(
+            f"{config.API_FOOTBALL_BASE_URL}/{path}",
+            headers=_api_football_headers(), params=params, timeout=10,
+        )
+        resp.raise_for_status()
+
+        remaining_header = resp.headers.get("x-ratelimit-requests-remaining")
+        if remaining_header is not None:
+            try:
+                supabase_state.save_api_football_remaining(int(remaining_header))
+            except ValueError:
+                pass
+
+        data = resp.json()
+        errors = data.get("errors")
+        if errors:
+            return None
+        return data.get("response") or []
+    except Exception:
+        return None
+
+
 def resolve_api_football_team_id(team_name: str) -> int | None:
     """Id API-Football d'une équipe, par recherche sur son nom — mis en
-    cache (footballbot_team_refs) puisqu'un id ne change jamais."""
+    cache (footballbot_team_refs) puisqu'un id ne change jamais (donnée de
+    référence, voir doc officielle : "à appeler une fois, puis cacher")."""
     if not config.API_FOOTBALL_KEY:
         return None
 
@@ -39,29 +82,20 @@ def resolve_api_football_team_id(team_name: str) -> int | None:
     if cached.get("api_football_id") is not None:
         return cached["api_football_id"]
 
-    try:
-        resp = requests.get(
-            f"{config.API_FOOTBALL_BASE_URL}/teams",
-            headers=_api_football_headers(), params={"name": team_name}, timeout=10,
-        )
-        resp.raise_for_status()
-        results = resp.json().get("response") or []
-        if not results:
-            return None
-        team_id = results[0]["team"]["id"]
-        supabase_state.save_team_ref(team_name, api_football_id=team_id)
-        return team_id
-    except Exception:
+    results = _api_football_get("teams", {"name": team_name})
+    if not results:
         return None
+
+    team_id = results[0]["team"]["id"]
+    supabase_state.save_team_ref(team_name, api_football_id=team_id)
+    return team_id
 
 
 def fetch_injury_count(team_name: str) -> int | None:
     """Nombre de joueurs actuellement listés comme blessés pour cette
-    équipe (API-Football, saison en cours). None si indisponible (pas de
-    clé, équipe non trouvée, erreur réseau...) — distinct de 0, qui
-    laisserait croire "aucun blessé confirmé". Résultat mis en cache
-    (config.INJURY_CACHE_HOURS) pour économiser le quota gratuit
-    (~100 requêtes/jour)."""
+    équipe (saison en cours). None si indisponible (pas de clé, quota
+    épuisé, équipe non trouvée, erreur...) — distinct de 0, qui laisserait
+    croire "aucun blessé confirmé". Mis en cache (config.INJURY_CACHE_HOURS)."""
     if not config.API_FOOTBALL_KEY:
         return None
 
@@ -79,26 +113,61 @@ def fetch_injury_count(team_name: str) -> int | None:
     if team_id is None:
         return None
 
-    try:
-        resp = requests.get(
-            f"{config.API_FOOTBALL_BASE_URL}/injuries",
-            headers=_api_football_headers(),
-            params={"team": team_id, "season": datetime.now().year}, timeout=10,
-        )
-        resp.raise_for_status()
-        count = len(resp.json().get("response") or [])
-        supabase_state.save_team_ref(
-            team_name, injury_count=count, injury_checked_at=datetime.now(timezone.utc).isoformat(),
-        )
-        return count
-    except Exception:
+    results = _api_football_get("injuries", {"team": team_id, "season": datetime.now().year})
+    if results is None:
         return None
+
+    count = len(results)
+    supabase_state.save_team_ref(
+        team_name, injury_count=count, injury_checked_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return count
+
+
+def fetch_recent_uefa_fixture(team_name: str, days_back: int = None) -> str | None:
+    """Date ISO du dernier match européen (Ligue des Champions/Europa/
+    Conference) de cette équipe dans les `days_back` derniers jours, via
+    API-Football (`/fixtures?team=<id>&last=5`, filtré sur `league.id` —
+    voir config.API_FOOTBALL_UEFA_LEAGUE_IDS), ou None. Plus fiable que le
+    rapprochement par nom (football-data.org) puisque basé sur l'id
+    d'équipe déjà résolu pour les blessures — pas de requête en plus pour
+    l'id, seulement pour les fixtures."""
+    if not config.API_FOOTBALL_KEY:
+        return None
+
+    team_id = resolve_api_football_team_id(team_name)
+    if team_id is None:
+        return None
+
+    results = _api_football_get("fixtures", {"team": team_id, "last": 5})
+    if not results:
+        return None
+
+    days_back = days_back or config.EURO_LOOKBACK_DAYS
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+
+    for fixture in results:
+        league_id = (fixture.get("league") or {}).get("id")
+        if league_id not in config.API_FOOTBALL_UEFA_LEAGUE_IDS:
+            continue
+        date_str = (fixture.get("fixture") or {}).get("date")
+        if not date_str:
+            continue
+        try:
+            match_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if match_date >= cutoff:
+            return date_str
+
+    return None
 
 
 def fetch_recent_european_matches(days_back: int = None) -> list[dict]:
-    """Matchs de Ligue des Champions/Europa des derniers jours (toutes
-    équipes confondues) — [] si pas de clé ou erreur. Un seul appel par
-    compétition suivie (config.EURO_COMPETITION_CODES), pas un par équipe.
+    """Second avis, indépendant d'API-Football : matchs de Ligue des
+    Champions/Europa des derniers jours via football-data.org — [] si pas
+    de clé ou erreur. Un seul appel par compétition suivie
+    (config.EURO_COMPETITION_CODES), pas un par équipe.
 
     Retourne [{"home": nom_football_data_org, "away": nom_football_data_org,
     "date": iso_date}, ...]. Les noms sont ceux de football-data.org (ex:
