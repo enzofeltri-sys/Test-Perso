@@ -146,15 +146,36 @@ def _settle_pending_bets(state: dict, errors: list) -> int:
             supabase_state.update_leg_result(leg["id"], "won" if _leg_won(leg, result) else "lost")
             touched_bet_ids.add(leg["bet_id"])
 
-        for bet_id in touched_bet_ids:
-            legs = supabase_state.get_ticket_legs(bet_id)
-            if any(leg["result"] == "pending" for leg in legs):
-                continue
+        # Aussi TOUS les tickets encore "pending" en base, pas seulement ceux
+        # dont une jambe vient d'être résolue CE cycle-ci : un combiné dont
+        # une jambe est déjà "lost" (résolue lors d'un cycle précédent) doit
+        # être finalisé dès qu'on le détecte, pas seulement s'il se trouve
+        # qu'une AUTRE de ses jambes est retouchée ce cycle-là — sinon il
+        # reste "pending" indéfiniment tant que son match le plus tardif
+        # n'est pas joué, alors que l'issue est déjà mathématiquement
+        # certaine (bug vécu en prod : bankroll affichée fausse pendant
+        # plusieurs jours). Coût négligeable à cette échelle (quelques
+        # dizaines de tickets tout au plus).
+        touched_bet_ids |= set(supabase_state.get_pending_ticket_ids())
 
+        for bet_id in touched_bet_ids:
             ticket = supabase_state.get_ticket(bet_id)
-            won = all(leg["result"] == "won" for leg in legs)
-            pnl = ticket["stake"] * (ticket["odds"] - 1) if won else -ticket["stake"]
-            payout = ticket["stake"] * ticket["odds"] if won else 0.0
+            if ticket["status"] != "pending":
+                continue  # déjà réglé (ex: lors d'un cycle précédent)
+
+            legs = supabase_state.get_ticket_legs(bet_id)
+            any_leg_lost = any(leg["result"] == "lost" for leg in legs)
+            if not any_leg_lost and any(leg["result"] == "pending" for leg in legs):
+                continue  # pas encore décidé : aucune jambe perdante, mais il en reste en attente
+
+            # PostgREST sérialise les colonnes numeric en chaînes (précision
+            # arbitraire) — jamais castées jusqu'ici, ce qui aurait planté
+            # au tout premier ticket réglé (aucun ne l'avait encore été).
+            stake = float(ticket["stake"])
+            odds = float(ticket["odds"])
+            won = not any_leg_lost
+            pnl = stake * (odds - 1) if won else -stake
+            payout = stake * odds if won else 0.0
             state["bankroll"] += payout
             supabase_state.finalize_ticket(bet_id, "won" if won else "lost", round(pnl, 2), round(state["bankroll"], 2))
 
