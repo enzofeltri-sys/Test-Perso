@@ -801,7 +801,8 @@ a.link{ font-size:0.78rem; color:var(--text-muted); }
 footer{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align:center; }
 """
 
-_PAGE_HEAD = """<link rel="preconnect" href="https://fonts.googleapis.com">
+_PAGE_HEAD = """<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%238558d3'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">"""
 
@@ -902,7 +903,7 @@ def _render_status_page(
 </head>
 <body>
 <div class="wrap">
-  <p class="kicker">⚽ Paris virtuels</p>
+  <p class="kicker">Paris virtuels</p>
   <h1>{_esc(label)}</h1>
   <p class="disclaimer">100% éducatif — aucun argent réel n'est en jeu, aucun pari réel n'est placé.</p>
 
@@ -959,7 +960,7 @@ def _render_history_page(settled_tickets: list) -> str:
 </head>
 <body>
 <div class="wrap">
-  <p class="kicker">⚽ Paris virtuels</p>
+  <p class="kicker">Paris virtuels</p>
   <div class="card-head"><h1>Historique</h1><a class="link" href="/">← Retour</a></div>
   <p class="disclaimer">Tous les tickets réglés (gagnés et perdus), les plus récents d'abord.</p>
 
