@@ -22,6 +22,7 @@ Variable optionnelle :
                  DEPLOIEMENT.md.
 """
 
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -62,6 +63,24 @@ def _headers() -> dict:
 
 def _base_url() -> str:
     return os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1"
+
+
+def _sanitize_for_json(value):
+    """Remplace récursivement tout float non fini (NaN/Infinity) par None.
+    `requests` refuse de les encoder en JSON ("Out of range float values are
+    not JSON compliant"), et on a déjà vu ce défaut apparaître à plusieurs
+    endroits distincts (cote historique aberrante, métrique de backtest
+    contaminée par un lambda Poisson qui explose...) plutôt qu'à un seul
+    endroit prévisible. Filet de sécurité générique appliqué juste avant
+    CHAQUE appel réseau vers Supabase, plutôt que de traquer au cas par cas
+    chaque champ numérique susceptible d'en produire un jour."""
+    if isinstance(value, dict):
+        return {k: _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_for_json(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 # --------------------------------------------------------------------------
@@ -107,7 +126,7 @@ def save_state(state: dict) -> None:
     }
     headers = _headers()
     headers["Prefer"] = "resolution=merge-duplicates"
-    resp = requests.post(url, headers=headers, json=payload, timeout=15)
+    resp = requests.post(url, headers=headers, json=_sanitize_for_json(payload), timeout=15)
     resp.raise_for_status()
 
 
@@ -149,7 +168,7 @@ def upsert_matches(df: pd.DataFrame) -> int:
     for i in range(0, len(payload_rows), UPSERT_BATCH_SIZE):
         batch = payload_rows[i:i + UPSERT_BATCH_SIZE]
         for attempt in range(UPSERT_MAX_RETRIES):
-            resp = requests.post(url, headers=headers, params=params, json=batch, timeout=30)
+            resp = requests.post(url, headers=headers, params=params, json=_sanitize_for_json(batch), timeout=30)
             if resp.status_code not in UPSERT_RETRYABLE_STATUS:
                 break
             if attempt == UPSERT_MAX_RETRIES - 1:
@@ -224,7 +243,7 @@ def save_model(model_b64: str, feature_columns: list, train_matches: int, test_m
     }
     headers = _headers()
     headers["Prefer"] = "resolution=merge-duplicates"
-    resp = requests.post(url, headers=headers, json=payload, timeout=15)
+    resp = requests.post(url, headers=headers, json=_sanitize_for_json(payload), timeout=15)
     resp.raise_for_status()
 
 
@@ -272,13 +291,13 @@ def insert_ticket(stake: float, prob: float, odds: float, ev: float, legs: list)
     headers = _headers()
     headers["Prefer"] = "return=representation"
     payload = {"num_legs": len(legs), "prob": prob, "odds": odds, "ev": ev, "stake": stake}
-    resp = requests.post(url, headers=headers, json=payload, timeout=15)
+    resp = requests.post(url, headers=headers, json=_sanitize_for_json(payload), timeout=15)
     resp.raise_for_status()
     bet_id = resp.json()[0]["id"]
 
     legs_url = f"{_base_url()}/{_table('bet_legs')}"
     legs_payload = [{**leg, "bet_id": bet_id} for leg in legs]
-    resp = requests.post(legs_url, headers=_headers(), json=legs_payload, timeout=15)
+    resp = requests.post(legs_url, headers=_headers(), json=_sanitize_for_json(legs_payload), timeout=15)
     resp.raise_for_status()
     return bet_id
 
@@ -298,7 +317,7 @@ def get_pending_legs() -> list:
 def update_leg_result(leg_id: int, result: str) -> None:
     url = f"{_base_url()}/{_table('bet_legs')}"
     payload = {"result": result, "settled_at": datetime.now(timezone.utc).isoformat()}
-    resp = requests.patch(url, headers=_headers(), params={"id": f"eq.{leg_id}"}, json=payload, timeout=15)
+    resp = requests.patch(url, headers=_headers(), params={"id": f"eq.{leg_id}"}, json=_sanitize_for_json(payload), timeout=15)
     resp.raise_for_status()
 
 
@@ -329,7 +348,7 @@ def finalize_ticket(bet_id: int, status: str, pnl: float, bankroll_after: float)
         "status": status, "pnl": pnl, "bankroll_after": bankroll_after,
         "settled_at": datetime.now(timezone.utc).isoformat(),
     }
-    resp = requests.patch(url, headers=_headers(), params={"id": f"eq.{bet_id}"}, json=payload, timeout=15)
+    resp = requests.patch(url, headers=_headers(), params={"id": f"eq.{bet_id}"}, json=_sanitize_for_json(payload), timeout=15)
     resp.raise_for_status()
 
 
@@ -418,7 +437,7 @@ def save_api_football_remaining(value: int) -> None:
         url = f"{_base_url()}/{_table('state')}"
         resp = requests.patch(
             url, headers=_headers(), params={"id": f"eq.{STATE_ID}"},
-            json={"api_football_remaining": value}, timeout=10,
+            json=_sanitize_for_json({"api_football_remaining": value}), timeout=10,
         )
         resp.raise_for_status()
     except Exception:
@@ -455,7 +474,7 @@ def save_team_ref(team_name: str, **fields) -> None:
         payload = {"team_name": team_name, **fields, "updated_at": datetime.now(timezone.utc).isoformat()}
         headers = _headers()
         headers["Prefer"] = "resolution=merge-duplicates"
-        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        resp = requests.post(url, headers=headers, json=_sanitize_for_json(payload), timeout=10)
         resp.raise_for_status()
     except Exception:
         pass
@@ -471,7 +490,7 @@ def log_journal_entry(author: str, message: str, data: dict = None) -> None:
         payload = {"author": author, "message": message}
         if data is not None:
             payload["data"] = data
-        resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
+        resp = requests.post(url, headers=_headers(), json=_sanitize_for_json(payload), timeout=15)
         resp.raise_for_status()
     except Exception:
         pass
