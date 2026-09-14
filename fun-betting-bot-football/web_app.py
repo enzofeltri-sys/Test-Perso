@@ -509,47 +509,9 @@ def _place_new_bets(state: dict, errors: list) -> int:
     return tickets_placed
 
 
-def _diag_uefa_history_once() -> None:
-    """DIAGNOSTIC TEMPORAIRE (v2) — à retirer après lecture du résultat.
-    La v1 (via external_data._api_football_get) a renvoyé "None" de façon
-    ambiguë : cette fonction avale aussi bien une clé absente, un quota
-    épuisé, une erreur HTTP qu'une erreur métier — impossible de savoir
-    laquelle sans le détail brut. Fait l'appel HTTP directement pour capter
-    le code HTTP et le corps de la réponse tels quels."""
-    import requests
-
-    try:
-        resp = requests.get(
-            f"{config.API_FOOTBALL_BASE_URL}/fixtures",
-            headers={"x-apisports-key": config.API_FOOTBALL_KEY},
-            params={"league": 2, "season": 2019},
-            timeout=10,
-        )
-        try:
-            data = resp.json()
-        except Exception:
-            data = {}
-        results = data.get("response")
-        detail = (
-            f"HTTP {resp.status_code} | errors={data.get('errors')!r} | "
-            f"results={'None' if results is None else f'{len(results)} matchs'} | "
-            f"remaining-header={resp.headers.get('x-ratelimit-requests-remaining')}"
-        )
-        supabase_state.log_journal_entry(
-            "bot", f"[DIAG2 historique UEFA] saison 2019, Ligue des Champions : {detail}",
-            {"event": "diag_uefa_history_v2"},
-        )
-    except Exception as exc:
-        supabase_state.log_journal_entry(
-            "bot", f"[DIAG2 historique UEFA] exception réseau : {exc!r}", {"event": "diag_uefa_history_v2"},
-        )
-
-
 def run_tick() -> dict:
     errors = []
     state = supabase_state.load_state(config.INITIAL_BANKROLL)
-
-    _diag_uefa_history_once()  # TEMPORAIRE — voir docstring, à retirer après lecture
 
     tickets_settled = _settle_pending_bets(state, errors)
     tickets_placed = _place_new_bets(state, errors)
