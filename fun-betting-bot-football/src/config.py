@@ -28,10 +28,19 @@ UPCOMING_SAMPLE_PATH = DATA_DIR / "upcoming_matches_sample.json"
 # --------------------------------------------------------------------------
 FOOTBALL_DATA_URL_TEMPLATE = "https://www.football-data.co.uk/mmz4281/{season}/{league}.csv"
 
-# Code ligue (football-data.co.uk) -> nom lisible
+# Code ligue (football-data.co.uk) -> nom lisible. Liga/Bundesliga/Serie A
+# ajoutées pour donner un historique domestique fiable (2018-2025, même
+# source que E0/F1) aux clubs qui jouent aussi la coupe d'Europe — sans
+# ça, un club comme le Real Madrid ou le Bayern n'aurait presque aucune
+# feature de forme exploitable (l'essentiel de leurs matchs se joue en
+# championnat national, pas en C1/C3). Étape préalable à toute tentative
+# de pari sur les coupes d'Europe elles-mêmes (voir README).
 LEAGUES = {
     "E0": "Premier League",
     "F1": "Ligue 1",
+    "SP1": "Liga",
+    "D1": "Bundesliga",
+    "I1": "Serie A",
 }
 
 # Saisons au format attendu par football-data.co.uk : "1819" = saison 2018-19
@@ -101,10 +110,15 @@ FOOTBALL_DATA_ORG_BASE_URL = "https://api.football-data.org/v4"
 EURO_COMPETITION_CODES = ["CL", "EL"]
 EURO_LOOKBACK_DAYS = 5  # fenêtre pour détecter un match européen récent
 
-# Clés de sport The Odds API pour nos deux ligues (voir /v4/sports pour la liste complète)
+# Clés de sport The Odds API pour nos ligues (voir /v4/sports pour la liste
+# complète) — SP1/D1/I1 non vérifiées en direct (même réserve que le reste
+# des clés de config non testées contre les vraies API, voir team_names.py).
 ODDS_API_SPORT_KEYS = {
     "E0": "soccer_epl",
     "F1": "soccer_france_ligue_one",
+    "SP1": "soccer_spain_la_liga",
+    "D1": "soccer_germany_bundesliga",
+    "I1": "soccer_italy_serie_a",
 }
 
 # --------------------------------------------------------------------------
@@ -204,10 +218,15 @@ MAX_STAKE_FRACTION = 0.03        # garde-fou : jamais plus de 3% de la bankroll 
 DRAWDOWN_STOP_FRACTION = 0.20
 
 # --------------------------------------------------------------------------
-# Throttle des appels à The Odds API (free tier = 500 crédits/mois)
-# --------------------------------------------------------------------------
+# Throttle des appels à The Odds API (free tier = 500 crédits/mois) — 1
+# appel PAR LIGUE à chaque fetch. Passer de 2 à 5 ligues (voir
+# config.LEAGUES) multiplie le coût par ~2,5 : à 12h de throttle sur les
+# scores, 5 ligues auraient donné ~480 appels/mois, dangereusement proche
+# du plafond. Relevé à 24h — le règlement n'a pas besoin d'être aussi
+# fréquent (un pari ne se règle de toute façon pas avant
+# RESULT_SETTLE_BUFFER_HOURS après le coup d'envoi).
 ODDS_FETCH_INTERVAL_HOURS = 20   # nouveaux matchs à venir : au plus 1x/jour/ligue
-SCORES_FETCH_INTERVAL_HOURS = 12  # règlement des paris en attente : 2x/jour max
+SCORES_FETCH_INTERVAL_HOURS = 24  # règlement des paris en attente : 1x/jour/ligue
 RESULT_SETTLE_BUFFER_HOURS = 3   # on ne tente de régler un match que 3h après son coup d'envoi
 # Filet de sécurité indépendant de toute estimation de coût par marché :
 # The Odds API renvoie le quota restant dans l'en-tête de chaque réponse

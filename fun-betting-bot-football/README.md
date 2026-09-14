@@ -29,8 +29,12 @@ compris) :
 
 1. **Historique** : [Football-Data.co.uk](https://www.football-data.co.uk)
    fournit gratuitement, sans clé, les résultats et cotes de plusieurs
-   bookmakers pour la Premier League (E0) et la Ligue 1 (F1), saisons
-   2018-19 à 2025-26 (`src/data_loader.py`).
+   bookmakers pour Premier League (E0), Ligue 1 (F1), Liga (SP1),
+   Bundesliga (D1) et Serie A (I1), saisons 2018-19 à 2025-26
+   (`src/data_loader.py`). Liga/Bundesliga/Serie A ajoutées pour donner un
+   historique domestique fiable aux clubs qui jouent aussi la coupe
+   d'Europe — étape préalable à toute tentative d'y parier un jour (voir
+   "Limites connues").
 2. **Features** (`src/features.py`) : forme récente de chaque équipe sur
    ses 5 derniers matchs (points, buts marqués/encaissés) + repos (jours
    depuis le match précédent), calculées sans fuite de données (uniquement
@@ -107,7 +111,10 @@ Dans `src/config.py` :
 LEAGUES = {
     "E0": "Premier League",
     "F1": "Ligue 1",
-    "D1": "Bundesliga",   # code football-data.co.uk de la ligue à ajouter
+    "SP1": "Liga",
+    "D1": "Bundesliga",
+    "I1": "Serie A",
+    "N1": "Eredivisie",   # code football-data.co.uk de la ligue à ajouter
 }
 ```
 
@@ -179,9 +186,17 @@ vérifiés en direct non plus.
   jamais pariables — voir section "Comment ça marche".
 - Les mappings de noms d'équipes (`src/team_names.py`) sont construits à
   la main et n'ont pas pu être vérifiés contre les vraies API au moment de
-  l'écriture — voir DEPLOIEMENT.md, section "Limites à connaître".
+  l'écriture — voir DEPLOIEMENT.md, section "Limites à connaître". Les
+  ajouts Liga/Bundesliga/Serie A partagent la même réserve.
 - Pas de données xG (non fournies par football-data.co.uk gratuitement) :
   les features se limitent à la forme récente (points, buts) et au repos.
+- **Coupe d'Europe (C1/C3/Conference) pas encore pariable** : Liga/
+  Bundesliga/Serie A ont été ajoutées comme étape préalable (historique
+  domestique fiable pour les clubs européens), mais les matchs de coupe
+  d'Europe eux-mêmes ne sont ni téléchargés ni pariés. L'historique
+  spécifique à ces compétitions (API-Football, plan gratuit) n'est
+  disponible que sur les saisons 2022 à 2024, contre 2018-2025 pour les
+  championnats domestiques — vérifié en direct le 2026-09-14.
 
 ---
 
