@@ -23,6 +23,7 @@ Variable optionnelle :
 """
 
 import os
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -31,6 +32,15 @@ import requests
 STATE_ID = "default"
 MODEL_ID = "default"
 PAGE_SIZE = 1000
+
+# Lots plus petits que PAGE_SIZE (lecture) pour l'upsert : chaque lot avec
+# résolution de conflit (merge-duplicates) coûte plus cher côté Postgres
+# qu'une simple lecture, et le passage à 5 championnats (vs 2) a fait
+# dépasser le timeout de la passerelle Supabase sur des lots de 1000 lignes
+# (504 Gateway Timeout observé en prod le 2026-09-14).
+UPSERT_BATCH_SIZE = 200
+UPSERT_MAX_RETRIES = 4
+UPSERT_RETRYABLE_STATUS = {502, 503, 504}
 
 
 def _prefix() -> str:
@@ -130,9 +140,15 @@ def upsert_matches(df: pd.DataFrame) -> int:
     params = {"on_conflict": "league,season,home_team,away_team,date"}
 
     sent = 0
-    for i in range(0, len(payload_rows), PAGE_SIZE):
-        batch = payload_rows[i:i + PAGE_SIZE]
-        resp = requests.post(url, headers=headers, params=params, json=batch, timeout=30)
+    for i in range(0, len(payload_rows), UPSERT_BATCH_SIZE):
+        batch = payload_rows[i:i + UPSERT_BATCH_SIZE]
+        for attempt in range(UPSERT_MAX_RETRIES):
+            resp = requests.post(url, headers=headers, params=params, json=batch, timeout=30)
+            if resp.status_code not in UPSERT_RETRYABLE_STATUS:
+                break
+            if attempt == UPSERT_MAX_RETRIES - 1:
+                break
+            time.sleep(2 ** attempt)  # 1s, 2s, 4s — passerelle Supabase surchargée, pas un bug de données
         resp.raise_for_status()
         sent += len(batch)
 
