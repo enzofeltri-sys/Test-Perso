@@ -593,14 +593,13 @@ def status():
         pass
 
     pending_tickets = _safe_call(supabase_state.get_pending_tickets, default=[])
-    recent_settled = _safe_call(supabase_state.get_recent_settled_tickets, 3, default=[])
     settled_tickets = _safe_call(supabase_state.get_settled_tickets_chronological, 300, default=[])
     journal = _safe_call(supabase_state.get_recent_journal, 40, default=[])
     errors = _safe_call(supabase_state.get_recent_errors, 5, default=[])
     model_row = _safe_call(supabase_state.load_model, default={})
 
     return _render_status_page(
-        bankroll, pending_tickets, recent_settled, settled_tickets, journal, errors, model_row,
+        bankroll, pending_tickets, settled_tickets, journal, errors, model_row,
     )
 
 
@@ -814,7 +813,7 @@ def _ticket_end_date(t: dict) -> str:
 
 
 def _render_status_page(
-    bankroll, pending_tickets, recent_settled, settled_tickets, journal, errors, model_row,
+    bankroll, pending_tickets, settled_tickets, journal, errors, model_row,
 ) -> str:
     label = os.environ.get("BOT_LABEL") or "bot de paris football virtuels"
     metrics = (model_row or {}).get("backtest_metrics") or {}
@@ -839,10 +838,12 @@ def _render_status_page(
     # d'abord) + seulement les 3 derniers réglés — l'historique complet est
     # sur /historique pour ne pas noyer les paris en cours sous des
     # dizaines de tickets déjà réglés.
+    # Uniquement les paris en cours ici, triés par date de fin croissante —
+    # tout pari réglé (gagné ou perdu) va sur /historique, jamais mélangé
+    # avec les paris encore actifs.
     pending_for_display = sorted(pending_tickets, key=_ticket_end_date)
-    ordered_tickets = pending_for_display + list(recent_settled)
 
-    bet_cards = "".join(_ticket_card(t) for t in ordered_tickets) or '<p class="empty">Aucun pari pour l\'instant.</p>'
+    bet_cards = "".join(_ticket_card(t) for t in pending_for_display) or '<p class="empty">Aucun pari en cours pour l\'instant.</p>'
 
     is_preview = lambda j: (j.get("data") or {}).get("event") == "match_preview"
     main_journal = [j for j in journal if not is_preview(j)][:12]
@@ -919,7 +920,7 @@ def _render_status_page(
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Derniers tickets</h2><a class="link" href="/historique">Historique complet →</a></div>
+    <div class="card-head"><h2>Paris en cours</h2><a class="link" href="/historique">Historique complet →</a></div>
     {bet_cards}
   </div>
 

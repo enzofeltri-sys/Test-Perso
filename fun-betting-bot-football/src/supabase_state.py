@@ -345,13 +345,6 @@ def get_pending_tickets() -> list:
     return _tickets_with_legs({"status": "eq.pending"})
 
 
-def get_recent_settled_tickets(limit: int = 3) -> list:
-    """Les `limit` derniers tickets réglés (won/lost), les plus récents
-    d'abord — affichés sur la page de statut ; l'historique complet est sur
-    /historique (voir get_settled_tickets_history)."""
-    return _tickets_with_legs({"status": "in.(won,lost)", "order": "settled_at.desc", "limit": str(limit)})
-
-
 def get_settled_tickets_history(limit: int = 500) -> list:
     """Tous les tickets réglés (won/lost), les plus récents d'abord — pour
     la page /historique (contrairement à get_settled_tickets_chronological,

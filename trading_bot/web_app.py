@@ -1038,7 +1038,7 @@ def _build_equity_chart_svg(series: list) -> str:
 
 ALL_PAGE = """<!doctype html>
 <title>Vue d'ensemble — 4 bots</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2396622A'/></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1142,7 +1142,7 @@ ALL_PAGE = """<!doctype html>
 <div id="pull-indicator">tirer pour rafraîchir</div>
 
 <div class="wrap">
-  <p class="kicker">🤖 Vue d'ensemble</p>
+  <p class="kicker">Vue d'ensemble</p>
   <h1>Les 4 bots</h1>
 
   <div class="chart-card">
@@ -1179,7 +1179,7 @@ ALL_PAGE = """<!doctype html>
   {% for b in bots %}
   <div class="bot">
     <div class="bot-head">
-      <span class="bot-name"><span class="legend-dot" style="background:var({{ b.color_var }})"></span> {{ '⚽' if b.kind == 'betting' else '📈' }} {{ b.label }}</span>
+      <span class="bot-name"><span class="legend-dot" style="background:var({{ b.color_var }})"></span> {{ b.label }}</span>
       {% if b.summary.found %}
       <span class="status-line">
         <span class="dot {{ 'bad' if b.summary.total_dd_tripped else ('ok' if b.summary.healthy else 'bad') }}"></span>
@@ -1321,10 +1321,7 @@ def all_bots():
         chart_series = []
         for b, color_var in zip(BOT_REGISTRY, color_vars):
             summary = _fetch_bot_summary(b["prefix"], b.get("kind", "trading"))
-            bots.append({
-                "label": b["label"], "url": b["url"], "summary": summary, "color_var": color_var,
-                "kind": b.get("kind", "trading"),
-            })
+            bots.append({"label": b["label"], "url": b["url"], "summary": summary, "color_var": color_var})
             points = []
             for ts_raw, equity in summary["equity_points"]:
                 try:
