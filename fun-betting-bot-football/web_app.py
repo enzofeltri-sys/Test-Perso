@@ -509,9 +509,41 @@ def _place_new_bets(state: dict, errors: list) -> int:
     return tickets_placed
 
 
+def _diag_uefa_history_once() -> None:
+    """DIAGNOSTIC TEMPORAIRE — à retirer après lecture du résultat dans le
+    journal. Teste si le plan gratuit API-Football donne accès aux saisons
+    passées de coupe d'Europe (nécessaire avant d'envisager d'y parier un
+    jour) : une saison de Ligue des Champions (league=2) vieille de
+    plusieurs années (2019) ne doit renvoyer des matchs QUE si l'historique
+    est bien accessible en gratuit."""
+    try:
+        results = external_data._api_football_get("fixtures", {"league": 2, "season": 2019})
+        if results is None:
+            detail = "None (clé absente, quota épuisé, ou accès refusé par le plan)"
+        elif not results:
+            detail = "0 match renvoyé (saison probablement hors du plan gratuit)"
+        else:
+            sample = results[0]
+            teams = sample.get("teams", {})
+            detail = (
+                f"{len(results)} matchs renvoyés — accès confirmé. Exemple : "
+                f"{(teams.get('home') or {}).get('name')} vs {(teams.get('away') or {}).get('name')}"
+            )
+        supabase_state.log_journal_entry(
+            "bot", f"[DIAG historique UEFA] saison 2019, Ligue des Champions : {detail}",
+            {"event": "diag_uefa_history"},
+        )
+    except Exception as exc:
+        supabase_state.log_journal_entry(
+            "bot", f"[DIAG historique UEFA] erreur : {exc}", {"event": "diag_uefa_history"},
+        )
+
+
 def run_tick() -> dict:
     errors = []
     state = supabase_state.load_state(config.INITIAL_BANKROLL)
+
+    _diag_uefa_history_once()  # TEMPORAIRE — voir docstring, à retirer après lecture
 
     tickets_settled = _settle_pending_bets(state, errors)
     tickets_placed = _place_new_bets(state, errors)
