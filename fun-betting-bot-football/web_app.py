@@ -17,7 +17,9 @@ compris) :
                utile quand on n'a pas encore accès aux secrets du dépôt.
                Ce service a un accès réseau normal (contrairement à un
                environnement de dev restreint) donc le téléchargement
-               football-data.co.uk y fonctionne.
+               football-data.co.uk y fonctionne. Asynchrone (thread
+               d'arrière-plan) : répond tout de suite, le résultat se
+               consulte sur / une fois terminé (voir admin_retrain).
 
 Aucun argent réel n'est jamais en jeu : "bankroll" est une unité virtuelle,
 "paris" ne sont que des lignes dans Supabase. Voir README.md.
@@ -33,6 +35,7 @@ minutes par UptimeRobot.
 import os
 import html
 import math
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -601,27 +604,65 @@ def alert_test():
     }), 200
 
 
+_retrain_lock = threading.Lock()
+
+
+def _run_retrain_background(dry_run: bool) -> None:
+    """Exécuté hors requête HTTP (voir admin_retrain) — le résultat n'est
+    donc visible que via le journal/`/` (backtest_metrics, trained_at), pas
+    dans une réponse JSON directe."""
+    import retrain as retrain_module
+
+    try:
+        result = retrain_module.run(dry_run=dry_run)
+        if dry_run:
+            # dry_run n'écrit rien dans Supabase (voir retrain.run) — sans ce
+            # log, le résultat d'un essai --dry-run serait invisible puisque
+            # cette fonction tourne hors requête HTTP (pas de réponse JSON
+            # à laquelle l'accrocher).
+            supabase_state.log_journal_entry(
+                "bot", f"Ré-entraînement (dry-run) : {result['backtest_metrics']}",
+            )
+    except Exception as exc:
+        supabase_state.log_error(f"admin/retrain: {exc}")
+        supabase_state.log_journal_entry(
+            "bot", f"Ré-entraînement en échec ({exc}) — le modèle précédent reste en place.",
+        )
+    finally:
+        _retrain_lock.release()
+
+
 @app.route("/admin/retrain")
 def admin_retrain():
-    """Déclenche retrain.py directement depuis ce service — voir le
-    docstring en tête de fichier. Protégé par RETRAIN_TOKEN (absent =
-    endpoint désactivé, même logique que /alert-test). Synchrone : le
-    ré-entraînement complet (téléchargement + entraînement + backtest)
-    prend quelques secondes, largement sous le timeout gunicorn (60s)."""
+    """Déclenche retrain.py depuis ce service — voir le docstring en tête de
+    fichier. Protégé par RETRAIN_TOKEN (absent = endpoint désactivé, même
+    logique que /alert-test).
+
+    Asynchrone (thread d'arrière-plan) : avec 5 championnats × ~8 saisons,
+    le pipeline complet (téléchargement de ~40 CSV + upsert de l'historique
+    + entraînement + backtest) peut dépasser le timeout gunicorn (60s,
+    voir render.yaml) — gunicorn tuait alors le worker en plein calcul,
+    renvoyant une erreur générique "Internal server error" sans passer par
+    notre gestion d'erreur (observé en prod le 2026-09-14, après la
+    correction des deux bugs précédents sur ce même endpoint). Le résultat
+    se consulte sur `/` (section "Dernier modèle entraîné") une fois le
+    ré-entraînement terminé, en général sous 2-3 minutes."""
     expected = os.environ.get("RETRAIN_TOKEN")
     if not expected:
         return jsonify({"error": "RETRAIN_TOKEN n'est pas défini — endpoint désactivé."}), 404
     if request.args.get("token") != expected:
         return jsonify({"error": "jeton invalide"}), 403
 
-    import retrain as retrain_module
+    if not _retrain_lock.acquire(blocking=False):
+        return jsonify({"status": "already_running", "message": "Un ré-entraînement est déjà en cours."}), 409
 
-    try:
-        result = retrain_module.run(dry_run=request.args.get("dry_run") == "1")
-        return jsonify(result), 200
-    except Exception as exc:
-        supabase_state.log_error(f"admin/retrain: {exc}")
-        return jsonify({"error": str(exc)}), 500
+    dry_run = request.args.get("dry_run") == "1"
+    threading.Thread(target=_run_retrain_background, args=(dry_run,), daemon=True).start()
+    return jsonify({
+        "status": "started",
+        "message": "Ré-entraînement lancé en arrière-plan — regarde la section "
+                    "\"Dernier modèle entraîné\" sur / dans 2-3 minutes.",
+    }), 202
 
 
 def _nice_step(raw_step: float) -> float:
