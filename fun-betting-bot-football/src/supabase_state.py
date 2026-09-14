@@ -132,7 +132,13 @@ def upsert_matches(df: pd.DataFrame) -> int:
         "OddsH": "odds_h", "OddsD": "odds_d", "OddsA": "odds_a",
     })
     columns = ["league", "season", "home_team", "away_team", "date", "fthg", "ftag", "ftr", "odds_h", "odds_d", "odds_a"]
-    payload_rows = records[columns].where(pd.notnull(records[columns]), None).to_dict(orient="records")
+    # pd.notnull() ne détecte PAS +/-inf (seulement NaN/None) : une cote
+    # aberrante dans le CSV source (football-data.co.uk) qui se retrouve à
+    # l'infini passerait telle quelle sinon, et `requests` refuse ensuite
+    # d'encoder ça en JSON ("Out of range float values are not JSON
+    # compliant", observé en prod le 2026-09-14 après l'ajout de 3 ligues).
+    clean = records[columns].replace([float("inf"), float("-inf")], None)
+    payload_rows = clean.where(pd.notnull(clean), None).to_dict(orient="records")
 
     url = f"{_base_url()}/{_table('matches')}"
     headers = _headers()
