@@ -66,10 +66,11 @@ _BOT_STYLE = """
     }
   }
   *{ box-sizing:border-box; margin:0; }
+  html{ touch-action:pan-y; }
   body{
     background:var(--bg); color:var(--text);
     font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-    line-height:1.55;
+    line-height:1.55; overflow-x:hidden; overflow-wrap:anywhere;
   }
   .wrap{ max-width:600px; margin:0 auto; padding:72px 24px 96px; }
   .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; }
@@ -101,8 +102,9 @@ _BOT_STYLE = """
   .stat .v.zero{ color:var(--text-faint); }
   .stat .v.bad{ color:var(--red); }
   .row{ display:flex; justify-content:space-between; align-items:baseline; gap:16px; padding:11px 0; }
+  .row > div:first-child{ min-width:0; }
   .row + .row{ border-top:1px solid var(--rule); }
-  .row .name{ font-weight:500; font-size:0.9rem; }
+  .row .name{ font-weight:500; font-size:0.9rem; overflow-wrap:anywhere; }
   .row .detail{ font-size:0.79rem; color:var(--text-muted); margin-top:2px; }
   .row .side{ font-family:"IBM Plex Mono", monospace; font-size:0.74rem; white-space:nowrap; flex-shrink:0; }
   .row .side.buy{ color:var(--green); }
@@ -124,7 +126,7 @@ _BOT_STYLE = """
   @media (prefers-reduced-motion: reduce){ #pull-indicator{ transition:none; } }
 """
 
-_BOT_HEAD = """<meta name="viewport" content="width=device-width, initial-scale=1">
+_BOT_HEAD = """<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2396622A'/></svg>">
 <link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADsUlEQVR4nO3cQW4TMRiGYRdxGo7BRSpxA07SHXsu0rOxQKqi0m9IpjP2b8/z7JBQUslvbMdO8vTrx7cGH/ky+g+gLnEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRB9HX0H8CW55fX23/+/vm957M/+QXjmt5lcatbIuIoZyOLWx0Sseeo5c4yHvqfu4mDSByFPDoZnD15iINIHFXsmwZOnTzEQSQOInEQiYNIHFXsO/E89ZxUHFV0OPF8lDhK2FfG2dcr4hiv4JzxlzgG211Gh1tZH/YZqeZq8kYcw+woo/MnwcQxRp1P9Gyw5xhgijKaOMoaXkYTR3/3TBsVymji6GyiMpo4epqrjCaObqYro4mjjxnLaOLoYNIymjjOVvZS7R7iONEsh12JOM4yexlNHGNVLqOJ4yTzbkJvieN4a5TRxHG4Zcpo4jjWSmU0cRxosTKaOI6yXhlNHIeY+hh0w1KfIb0dpG4v0wUOu5J1Zo53g9Tn1bxwGW2ZOD4cpCKz/aRltDXi2Ijg1D6W3ITeWiGObSf1sXwZbYFfML5/7A8cqiuU0WaPY8g3Ci9SRpt6WRny24zXKaPNO3N8fiexYwgvVUabdOY4ZI/5/PL60OMUeWPc03xxHDtIdz7a2oddyWTLykOD9FBGG+N6zTLaXHHsG6TPJ3K1rcabaZaV3S/fh4bt32e5bBltlpnjkIl9xxRy5TLaFHEcu+Qfu59duIxWf1k5fDN44HCuXUYrPnOc+jbhk1PI8mW0ynH0eQNZ/JdAxyq6rHQ7WrjIMO9TceYYcug05Oq/uHJxjD2O/O+zX6eMVm1ZGX5Qvf3IlyqjlYpjeBnbj3+1MlqdZaVIGW+GfAWmmhJxVCuDv8YvK8ooa3AcyqhsZBzKKG5YHMqob8C37J1FzqL3zKGMiXSNQxlz6ReHMqYz/pzjHWXUUSsOZZRSKA5lVNMvDrfh0+k6c7gNn8uAW1m34bMocWVPTYU2pFQjDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRD9AXcaNt4UVQI8AAAAAElFTkSuQmCC">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1099,7 +1101,7 @@ ALL_PAGE = """<!doctype html>
 <title>Vue d'ensemble — 4 bots</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2396622A'/></svg>">
 <link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADsUlEQVR4nO3cQW4TMRiGYRdxGo7BRSpxA07SHXsu0rOxQKqi0m9IpjP2b8/z7JBQUslvbMdO8vTrx7cGH/ky+g+gLnEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRB9HX0H8CW55fX23/+/vm957M/+QXjmt5lcatbIuIoZyOLWx0Sseeo5c4yHvqfu4mDSByFPDoZnD15iINIHFXsmwZOnTzEQSQOInEQiYNIHFXsO/E89ZxUHFV0OPF8lDhK2FfG2dcr4hiv4JzxlzgG211Gh1tZH/YZqeZq8kYcw+woo/MnwcQxRp1P9Gyw5xhgijKaOMoaXkYTR3/3TBsVymji6GyiMpo4epqrjCaObqYro4mjjxnLaOLoYNIymjjOVvZS7R7iONEsh12JOM4yexlNHGNVLqOJ4yTzbkJvieN4a5TRxHG4Zcpo4jjWSmU0cRxosTKaOI6yXhlNHIeY+hh0w1KfIb0dpG4v0wUOu5J1Zo53g9Tn1bxwGW2ZOD4cpCKz/aRltDXi2Ijg1D6W3ITeWiGObSf1sXwZbYFfML5/7A8cqiuU0WaPY8g3Ci9SRpt6WRny24zXKaPNO3N8fiexYwgvVUabdOY4ZI/5/PL60OMUeWPc03xxHDtIdz7a2oddyWTLykOD9FBGG+N6zTLaXHHsG6TPJ3K1rcabaZaV3S/fh4bt32e5bBltlpnjkIl9xxRy5TLaFHEcu+Qfu59duIxWf1k5fDN44HCuXUYrPnOc+jbhk1PI8mW0ynH0eQNZ/JdAxyq6rHQ7WrjIMO9TceYYcug05Oq/uHJxjD2O/O+zX6eMVm1ZGX5Qvf3IlyqjlYpjeBnbj3+1MlqdZaVIGW+GfAWmmhJxVCuDv8YvK8ooa3AcyqhsZBzKKG5YHMqob8C37J1FzqL3zKGMiXSNQxlz6ReHMqYz/pzjHWXUUSsOZZRSKA5lVNMvDrfh0+k6c7gNn8uAW1m34bMocWVPTYU2pFQjDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRD9AXcaNt4UVQI8AAAAAElFTkSuQmCC">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -1125,7 +1127,8 @@ ALL_PAGE = """<!doctype html>
     --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#9a72dd;
   }
   *{ box-sizing:border-box; margin:0; }
-  body{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }
+  html{ touch-action:pan-y; }
+  body{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; overflow-x:hidden; overflow-wrap:anywhere; }
   .wrap{ max-width:640px; margin:0 auto; padding:56px 20px 96px; }
   .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; }
   .kicker{ font-family:"IBM Plex Mono", monospace; font-size:0.72rem; letter-spacing:0.14em; text-transform:uppercase; color:var(--text-faint); margin-bottom:10px; }
