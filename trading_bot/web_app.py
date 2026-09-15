@@ -1072,7 +1072,8 @@ ALL_PAGE = """<!doctype html>
   .wrap{ max-width:640px; margin:0 auto; padding:56px 20px 96px; }
   .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; }
   .kicker{ font-family:"IBM Plex Mono", monospace; font-size:0.72rem; letter-spacing:0.14em; text-transform:uppercase; color:var(--text-faint); margin-bottom:10px; }
-  h1{ font-family:"Fraunces", serif; font-weight:500; font-size:1.9rem; margin-bottom:44px; }
+  h1{ font-family:"Fraunces", serif; font-weight:500; font-size:1.9rem; margin-bottom:44px; display:flex; align-items:center; gap:11px; }
+  .overview-icon{ width:24px; height:24px; flex-shrink:0; color:var(--accent); }
   .bot{ background:var(--card); border-radius:14px; padding:22px 22px 20px; margin-bottom:20px; }
   .bot-head{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:14px; }
   .bot-name{ font-weight:500; font-size:1.02rem; }
@@ -1146,7 +1147,7 @@ ALL_PAGE = """<!doctype html>
 
 <div class="wrap">
   <p class="kicker">Vue d'ensemble</p>
-  <h1>Les 4 bots</h1>
+  <h1><svg class="overview-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polyline points="2,17 8,11 13,14 22,4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="22" cy="4" r="1.7" fill="currentColor"/></svg>Les 4 bots</h1>
 
   <div class="chart-card">
     <h2>Évolution du capital</h2>
