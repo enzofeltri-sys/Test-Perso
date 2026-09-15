@@ -46,6 +46,13 @@ def _api_football_quota_ok() -> bool:
 # cycles, largement espacés par le throttle ODDS_FETCH_INTERVAL_HOURS).
 _call_budget = {"remaining": None}
 
+# Déduplication des diagnostics d'échec API-Football (voir _api_football_get)
+# pour la durée du PROCESSUS (pas remise à zéro par reset_call_budget,
+# contrairement à _call_budget/_team_ref_cache) : un même échec systématique
+# (mauvaise clé, endpoint non couvert par le plan...) se reproduirait sur
+# quasi CHAQUE équipe de CHAQUE cycle sans ça, noyant footballbot_errors.
+_logged_api_football_failures: set = set()
+
 # Cache mémoire de footballbot_team_refs pour la durée du cycle EN COURS.
 # resolve_api_football_team_id, fetch_injury_count et fetch_recent_uefa_fixture
 # lisent chacune la même ligne pour une même équipe — jusqu'à 3 lectures
@@ -106,10 +113,27 @@ def _api_football_get(path: str, params: dict) -> list | None:
         data = resp.json()
         errors = data.get("errors")
         if errors:
+            _log_api_football_failure(path, f"erreur métier: {errors}")
             return None
         return data.get("response") or []
-    except Exception:
+    except Exception as exc:
+        _log_api_football_failure(path, f"{type(exc).__name__}: {exc}")
         return None
+
+
+def _log_api_football_failure(path: str, reason: str) -> None:
+    """Best-effort, déduplié (voir _logged_api_football_failures) : sans ce
+    log, un échec systématique de _api_football_get (mauvaise config,
+    endpoint non couvert par le plan...) était complètement invisible —
+    la fonction retourne juste None comme pour un quota épuisé normal, ce
+    qui a empêché tout diagnostic du suivi des blessures resté muet en
+    prod (footballbot_team_refs à une seule ligne, injury_count toujours
+    NULL) jusqu'à ce point (observé le 2026-09-15)."""
+    key = (path, reason)
+    if key in _logged_api_football_failures:
+        return
+    _logged_api_football_failures.add(key)
+    supabase_state.log_error(f"external_data (API-Football /{path}) : {reason}")
 
 
 def resolve_api_football_team_id(team_name: str) -> int | None:
