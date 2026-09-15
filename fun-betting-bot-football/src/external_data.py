@@ -322,7 +322,17 @@ def fetch_team_logo_url(team_name: str) -> str | None:
         return cached["logo_url"] or None
 
     data = _sportsdb_get("searchteams.php", {"t": team_name})
-    teams = (data or {}).get("teams") or []
+    if data is None:
+        # Échec de l'appel lui-même (réseau, timeout, HTTP non-200 — y
+        # compris un 429 "trop de requêtes", observé en prod le 2026-09-15
+        # juste après une purge complète du cache qui a fait relancer une
+        # recherche pour TOUTES les équipes d'un coup) : ne rien mettre en
+        # cache. Sans ce garde-fou, un simple ralentissement temporaire de
+        # TheSportsDB se traduisait par un "aucun logo" mis en cache
+        # DÉFINITIVEMENT — indiscernable d'une vraie équipe introuvable.
+        return None
+
+    teams = data.get("teams") or []
     # Le diagnostic du 2026-09-15 a montré que le champ s'appelle "strBadge"
     # dans la réponse actuelle de l'API — PAS "strTeamBadge" comme documenté
     # dans certaines versions plus anciennes de la doc TheSportsDB. D'où
