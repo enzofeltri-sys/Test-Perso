@@ -272,6 +272,7 @@ def fetch_recent_european_matches(days_back: int = None) -> list[dict]:
 
 
 _sportsdb_diagnostic_logged = [False]
+_sportsdb_badge_diagnostic_logged = [False]
 
 
 def _sportsdb_get(path: str, params: dict) -> dict | None:
@@ -323,6 +324,19 @@ def fetch_team_logo_url(team_name: str) -> str | None:
     data = _sportsdb_get("searchteams.php", {"t": team_name})
     teams = (data or {}).get("teams") or []
     logo = teams[0].get("strTeamBadge") if teams else None
+    if teams and not logo and not _sportsdb_badge_diagnostic_logged[0]:
+        # L'équipe EST trouvée (voir _sportsdb_get, diagnostic HTTP déjà
+        # confirmé sain le 2026-09-15) mais strTeamBadge est vide même
+        # pour Arsenal — hypothèse : les URLs de médias (badge/logo) sont
+        # désormais réservées aux clés payantes de TheSportsDB, la clé de
+        # test gratuite ne renvoyant plus que les métadonnées. Ce log
+        # confirme (ou infirme) ça en affichant les champs bruts liés aux
+        # médias pour l'équipe trouvée.
+        _sportsdb_badge_diagnostic_logged[0] = True
+        media_fields = {k: v for k, v in teams[0].items() if "Badge" in k or "Logo" in k or "Jersey" in k}
+        supabase_state.log_error(
+            f"external_data (TheSportsDB) : '{team_name}' trouvée mais sans strTeamBadge — champs média : {media_fields}"
+        )
     _save_team_ref(team_name, logo_url=logo or "")
     return logo
 
