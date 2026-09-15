@@ -110,6 +110,15 @@ FOOTBALL_DATA_ORG_BASE_URL = "https://api.football-data.org/v4"
 EURO_COMPETITION_CODES = ["CL", "EL"]
 EURO_LOOKBACK_DAYS = 5  # fenêtre pour détecter un match européen récent
 
+# TheSportsDB (logo d'équipe, affichage uniquement) : gratuit, sans clé
+# obligatoire — "123" est la clé de test publique officielle (documentation
+# TheSportsDB), overridable si jamais elle devient invalide/trop limitée.
+# ~30 requêtes/minute, largement suffisant vu le cache permanent (un logo
+# ne change jamais, contrairement à injury_count/EURO_LOOKBACK_DAYS ci-dessus
+# qui doivent être revérifiés périodiquement).
+SPORTSDB_API_KEY = os.getenv("SPORTSDB_API_KEY") or "123"
+SPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json"
+
 # Clés de sport The Odds API pour nos ligues (voir /v4/sports pour la liste
 # complète) — SP1/D1/I1 non vérifiées en direct (même réserve que le reste
 # des clés de config non testées contre les vraies API, voir team_names.py).

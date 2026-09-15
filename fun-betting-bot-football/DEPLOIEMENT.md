@@ -112,14 +112,16 @@ create table if not exists public.footballbot_journal (
   data jsonb
 );
 
--- Cache pour src/external_data.py (blessures/coupe d'Europe, affichage
--- uniquement — voir README) : id API-Football et nombre de blessés par
--- équipe, pour éviter de re-consommer le quota gratuit à chaque cycle.
+-- Cache pour src/external_data.py (blessures/coupe d'Europe/logo, affichage
+-- uniquement — voir README) : id API-Football, nombre de blessés et URL du
+-- logo (TheSportsDB) par équipe, pour éviter de re-consommer le quota
+-- gratuit à chaque cycle.
 create table if not exists public.footballbot_team_refs (
   team_name text primary key,
   api_football_id int,
   injury_count int,
   injury_checked_at timestamptz,
+  logo_url text,
   updated_at timestamptz not null default now()
 );
 

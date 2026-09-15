@@ -176,6 +176,18 @@ déployé) — les IDs de compétition UEFA d'API-Football
 (`config.API_FOOTBALL_UEFA_LEAGUE_IDS`) sont les IDs usuels mais non
 vérifiés en direct non plus.
 
+## Logos d'équipe — TheSportsDB
+
+Chaque nom d'équipe affiché sur un ticket (page de statut, `/historique`)
+est précédé de son logo si [TheSportsDB](https://www.thesportsdb.com/)
+en trouve un (`src/external_data.fetch_team_logo_url`) — purement
+cosmétique, aucun impact sur le modèle ou la stratégie. Gratuit, clé de
+test publique par défaut (`config.SPORTSDB_API_KEY`, overridable via la
+variable d'environnement `SPORTSDB_API_KEY` si elle devient invalide).
+Résultat mis en cache définitivement dans `footballbot_team_refs.logo_url`
+(un logo ne change jamais) — absence de logo trouvé = rien d'affiché,
+jamais une icône d'image cassée.
+
 ## Limites connues
 - **Backtest 1X2 uniquement** : football-data.co.uk ne fournit pas de
   cotes over/under historiques, donc le backtest hebdomadaire ne peut
@@ -190,6 +202,12 @@ vérifiés en direct non plus.
   ajouts Liga/Bundesliga/Serie A partagent la même réserve.
 - Pas de données xG (non fournies par football-data.co.uk gratuitement) :
   les features se limitent à la forme récente (points, buts) et au repos.
+- **Logos TheSportsDB pas garantis pour toutes les équipes** : la
+  recherche se fait sur le nom football-data.co.uk tel quel (ex: "Man
+  United", "Paris SG") — TheSportsDB ne les reconnaît pas toujours sous
+  cette forme abrégée. Pas grave par conception (rien d'affiché plutôt
+  qu'un logo faux), mais certaines équipes n'auront jamais de logo sans
+  une table de correspondance dédiée (non faite pour l'instant).
 - **Coupe d'Europe (C1/C3/Conference) pas encore pariable** : Liga/
   Bundesliga/Serie A ont été ajoutées comme étape préalable (historique
   domestique fiable pour les clubs européens), mais les matchs de coupe

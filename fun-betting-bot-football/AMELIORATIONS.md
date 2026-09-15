@@ -30,11 +30,15 @@ sur N, répéter) donnerait une image plus fiable que notre split actuel —
 pourrait aussi éclairer le -31,81% de ROI résiduel (voir plus bas) : est-ce
 structurel ou un artefact du découpage train/test ?
 
-### TheSportsDB pour les logos d'équipes
-Gratuit (~100 req/min), fournit des assets médias (logos, badges) —
-purement cosmétique, mais pourrait rendre la web app moins austère
-(logos à côté des noms d'équipe sur les tickets) sans rien coûter.
-Aucun rapport avec le modèle/la stratégie.
+### TheSportsDB pour les logos d'équipes — ✅ fait le 2026-09-15
+Ajouté (`src/external_data.fetch_team_logo_url`, affiché via
+`web_app._team_logo_html` sur les tickets) : cache permanent dans
+`footballbot_team_refs.logo_url`, rien d'affiché si pas trouvé (jamais
+d'icône cassée). Limite connue : la recherche se fait sur le nom
+football-data.co.uk tel quel ("Man United"), pas toujours reconnu par
+TheSportsDB — pas de table de correspondance dédiée pour l'instant, donc
+certaines équipes n'auront jamais de logo. À enrichir si ça se voit trop
+à l'usage.
 
 ### RapidOddsAPI comme source de cotes de secours
 250 crédits gratuits, SDK Python officiel. Pas nécessaire tant que The

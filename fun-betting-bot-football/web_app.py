@@ -309,6 +309,18 @@ def _describe_match_context(match: dict, european_matches: list, deadline: float
     return " | ".join(parts)
 
 
+def _team_logo_html(team_name: str) -> str:
+    """<img> discret devant le nom d'une équipe (TheSportsDB, purement
+    cosmétique — voir src/external_data.fetch_team_logo_url). Chaîne vide
+    si pas de logo trouvé plutôt qu'une icône d'image cassée ; onerror
+    retire aussi la balise côté client si l'URL cesse de répondre après
+    coup (logo supprimé/renommé chez TheSportsDB)."""
+    url = external_data.fetch_team_logo_url(team_name)
+    if not url:
+        return ""
+    return f'<img class="team-logo" src="{_esc(url)}" alt="" onerror="this.remove()">'
+
+
 def _ticket_card(t: dict) -> str:
     """Une carte HTML pour un ticket (pari seul ou combiné), utilisée à la
     fois sur la page de statut (paris en cours + 3 derniers réglés) et sur
@@ -328,7 +340,9 @@ def _ticket_card(t: dict) -> str:
             leg.get("market"), leg.get("selection"), leg.get("home_team"), leg.get("away_team"),
         )
         return (
-            f'<div class="leg"><span class="leg-match">{_esc(leg.get("home_team"))} – {_esc(leg.get("away_team"))} '
+            f'<div class="leg"><span class="leg-match">'
+            f'{_team_logo_html(leg.get("home_team"))}{_esc(leg.get("home_team"))} – '
+            f'{_team_logo_html(leg.get("away_team"))}{_esc(leg.get("away_team"))} '
             f'<span class="bet-league">{_esc(_league_name(leg.get("league")))} · '
             f'{_esc(_fmt_local(leg.get("commence_time")))}</span></span>'
             f'<span class="pill pill-{_esc(leg.get("result"))}">{_esc(label)} @ {float(leg.get("odds") or 0):.2f}</span></div>'
@@ -790,6 +804,7 @@ a.link{ font-size:0.78rem; color:var(--text-muted); }
 .bet-meta{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:0.78rem; color:var(--text-muted); }
 .leg{ display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:0.82rem; padding:4px 0; }
 .leg-match{ color:var(--text-muted); }
+.team-logo{ width:14px; height:14px; vertical-align:-2px; margin-right:3px; object-fit:contain; }
 .pill{ padding:2px 8px; border-radius:999px; font-size:0.72rem; font-weight:500; }
 .pill-won{ background:var(--pill-won-bg); color:var(--pill-won-text); }
 .pill-lost{ background:var(--pill-lost-bg); color:var(--pill-lost-text); }

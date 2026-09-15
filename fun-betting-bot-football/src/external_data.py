@@ -9,13 +9,17 @@ Sources de données optionnelles, AFFICHAGE UNIQUEMENT :
 - football-data.org (calendrier européen, second avis) — nécessite
   FOOTBALL_DATA_ORG_KEY. Rapprochement par sous-chaîne (pas d'id), moins
   fiable qu'API-Football mais indépendant.
+- TheSportsDB (logo/badge d'équipe, purement cosmétique) — gratuite, clé
+  de test publique par défaut (config.SPORTSDB_API_KEY). Voir
+  fetch_team_logo_url, utilisée par web_app._team_logo_html.
 
-Aucune des deux ne peut ENTRAÎNER le modèle : il n'existe pas d'historique
-de blessures ni de calendrier européen passé exploitable ici, donc pas de
-coefficient appris possible (voir src/model.py, entraîné uniquement sur
-football-data.co.uk). Ces fonctions servent uniquement à enrichir le
-journal (voir web_app._describe_match_context) pour une lecture humaine —
-c'est TOI qui juges, jamais un ajustement automatique des paris.
+Aucune de ces sources ne peut ENTRAÎNER le modèle : il n'existe pas
+d'historique de blessures, de calendrier européen passé ni de logos
+exploitables ici, donc pas de coefficient appris possible (voir
+src/model.py, entraîné uniquement sur football-data.co.uk). Blessures et
+coupe d'Europe enrichissent le journal (voir web_app._describe_match_context)
+pour une lecture humaine — c'est TOI qui juges, jamais un ajustement
+automatique des paris. Le logo n'est qu'un détail visuel sur les tickets.
 
 ⚠️ Les IDs de ligue UEFA (config.API_FOOTBALL_UEFA_LEAGUE_IDS) et le
 rapprochement de noms football-data.org sont non vérifiés en direct
@@ -265,6 +269,42 @@ def fetch_recent_european_matches(days_back: int = None) -> list[dict]:
             continue
 
     return matches
+
+
+def _sportsdb_get(path: str, params: dict) -> dict | None:
+    """GET générique vers TheSportsDB — best-effort, jamais bloquant (même
+    philosophie que _api_football_get, mais pas de suivi de quota dédié :
+    la clé de test publique tolère ~30 requêtes/minute, largement
+    suffisant puisque chaque équipe n'est interrogée qu'une seule fois
+    dans sa vie — voir fetch_team_logo_url)."""
+    try:
+        resp = requests.get(
+            f"{config.SPORTSDB_BASE_URL}/{config.SPORTSDB_API_KEY}/{path}",
+            params=params, timeout=6,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return None
+
+
+def fetch_team_logo_url(team_name: str) -> str | None:
+    """URL du logo/badge d'une équipe (TheSportsDB), affichage uniquement
+    (voir web_app._team_logo_html) — jamais utilisé par le modèle/la
+    stratégie. Mis en cache DÉFINITIVEMENT (footballbot_team_refs.logo_url,
+    pas de expiry contrairement à injury_count) : un logo ne change
+    essentiellement jamais. Cache une chaîne vide pour "cherché, rien
+    trouvé" (distinct de NULL = "jamais cherché"), pour ne pas refaire la
+    même recherche infructueuse à chaque affichage de la page de statut."""
+    cached = _get_team_ref(team_name)
+    if cached.get("logo_url") is not None:
+        return cached["logo_url"] or None
+
+    data = _sportsdb_get("searchteams.php", {"t": team_name})
+    teams = (data or {}).get("teams") or []
+    logo = teams[0].get("strTeamBadge") if teams else None
+    _save_team_ref(team_name, logo_url=logo or "")
+    return logo
 
 
 def played_in_europe_recently(team_name: str, european_matches: list[dict]) -> str | None:
