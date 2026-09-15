@@ -271,20 +271,40 @@ def fetch_recent_european_matches(days_back: int = None) -> list[dict]:
     return matches
 
 
+_sportsdb_diagnostic_logged = [False]
+
+
 def _sportsdb_get(path: str, params: dict) -> dict | None:
     """GET générique vers TheSportsDB — best-effort, jamais bloquant (même
     philosophie que _api_football_get, mais pas de suivi de quota dédié :
     la clé de test publique tolère ~30 requêtes/minute, largement
     suffisant puisque chaque équipe n'est interrogée qu'une seule fois
-    dans sa vie — voir fetch_team_logo_url)."""
+    dans sa vie — voir fetch_team_logo_url).
+
+    Log UNE FOIS par process (voir _sportsdb_diagnostic_logged) le
+    statut HTTP + un extrait du corps de la réponse, peu importe le
+    résultat : contrairement à _api_football_get (où une équipe non
+    trouvée est un cas normal, silencieux par conception), TOUTES les
+    équipes échouaient ici (même Arsenal/Chelsea/PSG) — observé le
+    2026-09-15 via footballbot_team_refs (logo_url="" partout). Sans ce
+    diagnostic, impossible de distinguer une clé de test invalide/périmée
+    d'un format de réponse différent de celui attendu."""
     try:
         resp = requests.get(
             f"{config.SPORTSDB_BASE_URL}/{config.SPORTSDB_API_KEY}/{path}",
             params=params, timeout=6,
         )
+        if not _sportsdb_diagnostic_logged[0]:
+            _sportsdb_diagnostic_logged[0] = True
+            supabase_state.log_error(
+                f"external_data (TheSportsDB /{path}) diagnostic : HTTP {resp.status_code} — {resp.text[:300]!r}"
+            )
         resp.raise_for_status()
         return resp.json()
-    except Exception:
+    except Exception as exc:
+        if not _sportsdb_diagnostic_logged[0]:
+            _sportsdb_diagnostic_logged[0] = True
+            supabase_state.log_error(f"external_data (TheSportsDB /{path}) : {type(exc).__name__}: {exc}")
         return None
 
 
