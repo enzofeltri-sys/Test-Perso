@@ -30,11 +30,16 @@ sur N, répéter) donnerait une image plus fiable que notre split actuel —
 pourrait aussi éclairer le -31,81% de ROI résiduel (voir plus bas) : est-ce
 structurel ou un artefact du découpage train/test ?
 
-### TheSportsDB pour les logos d'équipes — ✅ fait le 2026-09-15
+### TheSportsDB pour les logos d'équipes — ✅ fait et confirmé en prod le 2026-09-15
 Ajouté (`src/external_data.fetch_team_logo_url`, affiché via
 `web_app._team_logo_html` sur les tickets) : cache permanent dans
 `footballbot_team_refs.logo_url`, rien d'affiché si pas trouvé (jamais
-d'icône cassée). Limite connue : la recherche se fait sur le nom
+d'icône cassée). Deux vrais bugs trouvés et corrigés avant que ça marche
+(voir "Historique des correctifs") : mauvais nom de champ (`strBadge` au
+lieu de `strTeamBadge`) et pollution du cache sur un 429 temporaire.
+Confirmé fonctionnel par Enzo.
+
+Limite connue restante : la recherche se fait sur le nom
 football-data.co.uk tel quel ("Man United"), pas toujours reconnu par
 TheSportsDB — pas de table de correspondance dédiée pour l'instant, donc
 certaines équipes n'auront jamais de logo. À enrichir si ça se voit trop
@@ -171,3 +176,14 @@ quel — le quota est plus contraignant que le confort d'affichage.
 - **2026-09-15** : `_api_football_get` avalait tout échec silencieusement
   (aucune trace de la vraie raison). Ajout d'un log dédupliqué par
   (endpoint, raison) dans `footballbot_errors`.
+- **2026-09-15** : logos TheSportsDB — le champ cherché (`strTeamBadge`)
+  n'existe pas dans la réponse actuelle de l'API, le vrai nom est
+  `strBadge`. Diagnostic confirmé via `footballbot_errors` (Rayo Vallecano
+  trouvée avec ses vraies métadonnées, champ absent). Corrigé, avec repli
+  sur `strTeamBadge` par robustesse.
+- **2026-09-15** : purger tout `footballbot_team_refs` d'un coup (bouton
+  "vider le cache") a fait relancer une recherche TheSportsDB pour toutes
+  les équipes d'une page en même temps, dépassant le rate limit (429).
+  `fetch_team_logo_url` mettait ce 429 temporaire en cache comme "aucun
+  logo" DÉFINITIVEMENT. Corrigé : un échec de l'appel (`data is None`) ne
+  sauvegarde plus rien, pour permettre une nouvelle tentative plus tard.
