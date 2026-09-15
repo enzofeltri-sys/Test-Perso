@@ -5,6 +5,43 @@ traités (ou traités partiellement), à ajuster au fur et à mesure plutôt que
 tout corriger d'un coup. Chaque entrée : quand ça a été repéré, ce qu'on a
 observé, l'hypothèse, et une piste de correctif si on décide de s'y mettre.
 
+## Idées tirées d'une revue d'APIs/repos externes
+*Ajouté le 2026-09-15, à partir d'un document de référence fourni par Enzo
+(APIs football gratuites + repos GitHub de bots de paris).*
+
+Vérification utile en passant : nos intégrations actuelles (API-Football,
+football-data.org, The Odds API, football-data.co.uk) correspondent
+exactement aux specs techniques du document (base URL, header d'auth,
+rate limits) — pas d'erreur de config de notre côté à chercher là-dessus.
+Ce qui en ressort de vraiment nouveau :
+
+### Méthodologie de backtest : walk-forward plutôt qu'un split unique
+Le repo `georgedouzas/sports-betting` (788⭐, toolbox Python dédiée aux
+paris sportifs — dataloaders + bettors scikit-learn + CLI) fait un
+backtest walk-forward (ré-entraînement glissant dans le temps), alors
+que notre `retrain.py` fait un split train/test UNIQUE et figé
+(`config.TEST_SEASON_START`). Un split unique peut donner un ROI backtest
+qui dépend beaucoup de la saison de test choisie, plutôt qu'une estimation
+robuste de la performance réelle du modèle.
+
+**Piste** (moyen terme, pas urgent) : jeter un œil à leur approche pour
+voir si un backtest glissant (réentraîner sur chaque saison N-1, tester
+sur N, répéter) donnerait une image plus fiable que notre split actuel —
+pourrait aussi éclairer le -31,81% de ROI résiduel (voir plus bas) : est-ce
+structurel ou un artefact du découpage train/test ?
+
+### TheSportsDB pour les logos d'équipes
+Gratuit (~100 req/min), fournit des assets médias (logos, badges) —
+purement cosmétique, mais pourrait rendre la web app moins austère
+(logos à côté des noms d'équipe sur les tickets) sans rien coûter.
+Aucun rapport avec le modèle/la stratégie.
+
+### RapidOddsAPI comme source de cotes de secours
+250 crédits gratuits, SDK Python officiel. Pas nécessaire tant que The
+Odds API (500 crédits/mois) suffit, mais à garder en tête si on ajoute
+encore des championnats et qu'on retombe sur un problème de quota comme
+avec le throttle scores à 24h.
+
 ## Modèle
 
 ### Le modèle Poisson n'a aucune notion de championnat
