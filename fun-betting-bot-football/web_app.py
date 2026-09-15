@@ -814,7 +814,11 @@ _PAGE_STYLE = """
   }
 }
 *{ box-sizing:border-box; margin:0; }
-body{ background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; line-height:1.55; }
+html{ touch-action:pan-y; }
+body{
+  background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  line-height:1.55; overflow-x:hidden;
+}
 .wrap{ max-width:640px; margin:0 auto; padding:40px 20px 64px; }
 .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-variant-numeric:tabular-nums; }
 .kicker{ font-family:"IBM Plex Mono", monospace; font-size:0.7rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-faint); margin-bottom:8px; }
@@ -949,7 +953,7 @@ def _render_status_page(
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>{_esc(label)}</title>
 {_PAGE_HEAD}
 <style>{_PAGE_STYLE}</style>
@@ -1033,7 +1037,7 @@ def _render_history_page(settled_tickets: list) -> str:
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Historique — {_esc(label)}</title>
 {_PAGE_HEAD}
 <style>{_PAGE_STYLE}</style>
@@ -1088,7 +1092,7 @@ def _render_journal_page(journal: list, errors: list) -> str:
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Journal — {_esc(label)}</title>
 {_PAGE_HEAD}
 <style>{_PAGE_STYLE}</style>
