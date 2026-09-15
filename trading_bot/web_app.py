@@ -1110,6 +1110,17 @@ ALL_PAGE = """<!doctype html>
   footer{ margin-top:40px; font-size:0.78rem; color:var(--text-faint); text-align:center; }
   footer a{ color:inherit; }
 
+  .settings{ margin-top:32px; }
+  .settings-toggle{ list-style:none; display:inline-flex; width:30px; height:30px; align-items:center; justify-content:center; border-radius:999px; cursor:pointer; color:var(--text-faint); }
+  .settings-toggle::-webkit-details-marker{ display:none; }
+  .settings-toggle:hover{ color:var(--text-muted); background:var(--card); }
+  .settings-toggle svg{ width:18px; height:18px; }
+  .settings-form{ display:flex; gap:8px; margin:14px 0 8px; flex-wrap:wrap; }
+  .settings-form input{ font:inherit; font-size:0.82rem; padding:7px 10px; border-radius:8px; border:1px solid var(--rule); background:var(--bg); color:var(--text); min-width:0; flex:1; }
+  .settings-form button{ font:inherit; font-size:0.82rem; padding:7px 14px; border-radius:8px; border:none; background:var(--card); color:var(--text); cursor:pointer; }
+  .settings-form button:hover{ opacity:0.85; }
+  .settings-hint{ font-size:0.78rem; color:var(--text-faint); }
+
   .chart-lightbox{
     position:fixed; inset:0; z-index:100; background:var(--bg);
     display:flex; flex-direction:column; align-items:center;
@@ -1210,6 +1221,23 @@ ALL_PAGE = """<!doctype html>
     <a class="bot-link" href="{{ b.url }}">Voir la page complète de {{ b.label.split(' — ')[0] }} →</a>
   </div>
   {% endfor %}
+
+  {% if football_bot_url %}
+  <details class="settings">
+    <summary class="settings-toggle" aria-label="Options">
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M 19.73 9.94 L 22.05 9.33 L 22.05 14.67 L 19.73 14.06 Z M 18.92 16.01 L 21.00 17.22 L 17.22 21.00 L 16.01 18.92 Z M 14.06 19.73 L 14.67 22.05 L 9.33 22.05 L 9.94 19.73 Z M 7.99 18.92 L 6.78 21.00 L 3.00 17.22 L 5.08 16.01 Z M 4.27 14.06 L 1.95 14.67 L 1.95 9.33 L 4.27 9.94 Z M 5.08 7.99 L 3.00 6.78 L 6.78 3.00 L 7.99 5.08 Z M 9.94 4.27 L 9.33 1.95 L 14.67 1.95 L 14.06 4.27 Z M 16.01 5.08 L 17.22 3.00 L 21.00 6.78 L 18.92 7.99 Z" fill="currentColor"/>
+        <circle cx="12" cy="12" r="5.4" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+      </svg>
+    </summary>
+    <form method="get" action="{{ football_bot_url }}/admin/clear-cache" class="settings-form">
+      <input type="password" name="token" placeholder="jeton admin bot foot" required>
+      <button type="submit">Vider le cache</button>
+    </form>
+    <p class="settings-hint">Blessures/logos/ids en cache du bot foot uniquement — les 3 bots crypto n'ont pas de cache équivalent.</p>
+  </details>
+  {% endif %}
 
   <footer>
     <p>Lecture seule — ne déclenche aucun cycle. Chaque bot garde son propre <span class="mono">/tick</span> et son propre déploiement, indépendamment de cette page.</p>
@@ -1353,9 +1381,16 @@ def all_bots():
                 windowed = [s for s in windowed if s["points"]]
             charts.append({"key": key, "label": label, "svg": _build_equity_chart_svg(windowed)})
 
+        # Le bouton "Vider le cache" (footballbot_team_refs) n'a de sens que
+        # pour le bot foot (seul à avoir un cache externe, voir
+        # src/external_data.py côté fun-betting-bot-football) — son URL est
+        # celle du service Render du bot foot, PAS de cette page, d'où
+        # l'action absolue plutôt qu'un chemin relatif.
+        football_bot_url = next((b["url"] for b in BOT_REGISTRY if b.get("kind") == "betting"), None)
+
         return render_template_string(
             ALL_PAGE, bots=bots, charts=charts, has_any_data=bool(chart_series),
-            default_range=DEFAULT_CHART_RANGE,
+            default_range=DEFAULT_CHART_RANGE, football_bot_url=football_bot_url,
         ), 200
     except Exception:
         return "OK - vue d'ensemble indisponible pour le moment.", 200
