@@ -323,19 +323,23 @@ def fetch_team_logo_url(team_name: str) -> str | None:
 
     data = _sportsdb_get("searchteams.php", {"t": team_name})
     teams = (data or {}).get("teams") or []
-    logo = teams[0].get("strTeamBadge") if teams else None
+    # Le diagnostic du 2026-09-15 a montré que le champ s'appelle "strBadge"
+    # dans la réponse actuelle de l'API — PAS "strTeamBadge" comme documenté
+    # dans certaines versions plus anciennes de la doc TheSportsDB. D'où
+    # l'absence totale de logos malgré des équipes bien trouvées (Rayo
+    # Vallecano, Arsenal...) : mauvais nom de champ, pas un problème de clé
+    # ni de plan payant. Les deux noms sont tentés pour rester robuste si
+    # l'API redevient incohérente entre équipes/versions.
+    logo = (teams[0].get("strBadge") or teams[0].get("strTeamBadge")) if teams else None
     if teams and not logo and not _sportsdb_badge_diagnostic_logged[0]:
-        # L'équipe EST trouvée (voir _sportsdb_get, diagnostic HTTP déjà
-        # confirmé sain le 2026-09-15) mais strTeamBadge est vide même
-        # pour Arsenal — hypothèse : les URLs de médias (badge/logo) sont
-        # désormais réservées aux clés payantes de TheSportsDB, la clé de
-        # test gratuite ne renvoyant plus que les métadonnées. Ce log
-        # confirme (ou infirme) ça en affichant les champs bruts liés aux
-        # médias pour l'équipe trouvée.
+        # Garde-fou pour un futur changement de schéma similaire (déjà vu
+        # une fois, voir commentaire ci-dessus) : logue les champs média
+        # bruts de l'équipe trouvée dès qu'aucun des deux noms connus ne
+        # donne de logo, plutôt que de re-deviner à l'aveugle.
         _sportsdb_badge_diagnostic_logged[0] = True
         media_fields = {k: v for k, v in teams[0].items() if "Badge" in k or "Logo" in k or "Jersey" in k}
         supabase_state.log_error(
-            f"external_data (TheSportsDB) : '{team_name}' trouvée mais sans strTeamBadge — champs média : {media_fields}"
+            f"external_data (TheSportsDB) : '{team_name}' trouvée mais ni strBadge ni strTeamBadge — champs média : {media_fields}"
         )
     _save_team_ref(team_name, logo_url=logo or "")
     return logo
