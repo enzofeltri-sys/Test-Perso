@@ -588,6 +588,13 @@ def history():
     return _render_history_page(settled_tickets)
 
 
+@app.route("/journal")
+def journal_page():
+    journal = _safe_call(supabase_state.get_recent_journal, 300, default=[])
+    errors = _safe_call(supabase_state.get_recent_errors, 100, default=[])
+    return _render_journal_page(journal, errors)
+
+
 def _safe_call(fn, *args, default=None):
     try:
         return fn(*args)
@@ -902,30 +909,23 @@ def _render_status_page(
 
     bet_cards = "".join(_ticket_card(t) for t in pending_for_display) or '<p class="empty">Aucun pari en cours pour l\'instant.</p>'
 
+    # Le journal complet (dont "marchés examinés", des lignes très longues
+    # une par match évalué) vit sur /journal — ici, juste un aperçu court
+    # pour ne pas noyer la page sous des dizaines de minutes de scroll
+    # (vécu en prod : jusqu'à 12+10 entrées, dont des lignes multi-marchés
+    # géantes, obligeant à scroller des minutes pour atteindre le bas de
+    # la page). Même logique que "Paris en cours" -> /historique.
     is_preview = lambda j: (j.get("data") or {}).get("event") == "match_preview"
-    main_journal = [j for j in journal if not is_preview(j)][:12]
-    preview_journal = [j for j in journal if is_preview(j)][:10]
+    main_journal = [j for j in journal if not is_preview(j)][:5]
 
     journal_items = "".join(
         f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span> {_esc(j.get("message"))}</li>'
         for j in main_journal
     ) or '<li class="empty">Rien pour l\'instant.</li>'
 
-    preview_items = "".join(
-        f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span> {_esc(j.get("message"))}</li>'
-        for j in preview_journal
-    )
-    preview_block = (
-        f'<div class="card"><h2>Marchés examinés récemment</h2>'
-        f'<p class="sub">Toutes les probabilités/cotes vues par le bot, y compris les marchés jamais '
-        f'pariés (double chance, résultat+buts : toujours estimés — voir README).</p>'
-        f'<ul class="list">{preview_items}</ul></div>'
-        if preview_items else ""
-    )
-
     errors_block = ""
     if errors:
-        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span> {_esc(e.get("message"))}</li>' for e in errors)
+        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span> {_esc(e.get("message"))}</li>' for e in errors[:3])
         errors_block = f'<div class="card"><h2>Erreurs récentes</h2><ul class="list">{errors_items}</ul></div>'
 
     chart_block = (
@@ -982,11 +982,9 @@ def _render_status_page(
   </div>
 
   <div class="card">
-    <h2>Journal</h2>
+    <div class="card-head"><h2>Journal</h2><a class="link" href="/journal">Journal complet →</a></div>
     <ul class="list">{journal_items}</ul>
   </div>
-
-  {preview_block}
 
   {errors_block}
 
@@ -1049,6 +1047,66 @@ def _render_history_page(settled_tickets: list) -> str:
   <div class="card">
     {cards}
   </div>
+</div>
+</body>
+</html>"""
+
+
+def _render_journal_page(journal: list, errors: list) -> str:
+    """Journal complet (jusqu'à 300 entrées) + erreurs (jusqu'à 100) — la
+    page de statut n'en garde qu'un aperçu très court (5 entrées, marchés
+    examinés totalement absents) pour rester consultable sans scroller
+    des minutes (vécu en prod : jusqu'à 12+10 entrées, dont des lignes
+    multi-marchés géantes, une par match évalué à chaque cycle)."""
+    label = os.environ.get("BOT_LABEL") or "bot de paris football virtuels"
+
+    is_preview = lambda j: (j.get("data") or {}).get("event") == "match_preview"
+    main_journal = [j for j in journal if not is_preview(j)]
+    preview_journal = [j for j in journal if is_preview(j)]
+
+    def items(entries):
+        return "".join(
+            f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span> {_esc(j.get("message"))}</li>'
+            for j in entries
+        ) or '<li class="empty">Rien pour l\'instant.</li>'
+
+    errors_block = ""
+    if errors:
+        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span> {_esc(e.get("message"))}</li>' for e in errors)
+        errors_block = f'<div class="card"><h2>Erreurs ({len(errors)})</h2><ul class="list">{errors_items}</ul></div>'
+
+    preview_block = ""
+    if preview_journal:
+        preview_block = f"""<details class="card">
+    <summary><h2 style="display:inline;">Marchés examinés ({len(preview_journal)})</h2></summary>
+    <p class="sub">Toutes les probabilités/cotes vues par le bot, y compris les marchés jamais
+      pariés (double chance, résultat+buts : toujours estimés — voir README).</p>
+    <ul class="list">{items(preview_journal)}</ul>
+  </details>"""
+
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Journal — {_esc(label)}</title>
+{_PAGE_HEAD}
+<style>{_PAGE_STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="kicker">Paris virtuels</p>
+  <div class="card-head"><h1>Journal</h1><a class="link" href="/">← Retour</a></div>
+  <p class="disclaimer">Historique complet des événements du bot, les plus récents d'abord.</p>
+
+  <div class="card">
+    <h2>Journal ({len(main_journal)})</h2>
+    <ul class="list">{items(main_journal)}</ul>
+  </div>
+
+  {errors_block}
+
+  {preview_block}
 </div>
 </body>
 </html>"""
