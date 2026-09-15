@@ -998,12 +998,26 @@ def _render_status_page(
         <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
       </svg>
     </summary>
-    <form method="get" action="/admin/clear-cache" class="settings-form">
-      <input type="password" name="token" placeholder="jeton admin" required>
+    <form method="get" action="/admin/clear-cache" class="settings-form" id="clear-cache-form">
+      <input type="password" name="token" id="clear-cache-token" placeholder="jeton admin" required>
       <button type="submit">Vider le cache</button>
     </form>
     <p class="sub">Réinitialise les blessures/logos/ids en cache (footballbot_team_refs) — force une nouvelle recherche à chaque source externe.</p>
   </details>
+  <script>
+    // Le jeton n'est jamais servi dans le HTML (contrairement à un lien
+    // pré-rempli) — mais une fois saisi, ton propre navigateur s'en
+    // souvient localement (localStorage, jamais envoyé nulle part
+    // d'autre que ce formulaire) pour éviter de le retaper à chaque fois.
+    (function() {{
+      var input = document.getElementById("clear-cache-token");
+      var saved = localStorage.getItem("footballbot_admin_token");
+      if (saved) input.value = saved;
+      document.getElementById("clear-cache-form").addEventListener("submit", function() {{
+        localStorage.setItem("footballbot_admin_token", input.value);
+      }});
+    }})();
+  </script>
 
   <footer>Lecture seule — <span class="mono">/tick</span> déclenche un cycle (pensé pour UptimeRobot).</footer>
 </div>
