@@ -53,15 +53,8 @@ _LOCAL_TZ = ZoneInfo("Europe/Paris")
 
 app = Flask(__name__)
 
-STATUS_PAGE = """<!doctype html>
-<title>Journal de bord — {{ bot_label }}</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2396622A'/></svg>">
-<link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADsUlEQVR4nO3cQW4TMRiGYRdxGo7BRSpxA07SHXsu0rOxQKqi0m9IpjP2b8/z7JBQUslvbMdO8vTrx7cGH/ky+g+gLnEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRB9HX0H8CW55fX23/+/vm957M/+QXjmt5lcatbIuIoZyOLWx0Sseeo5c4yHvqfu4mDSByFPDoZnD15iINIHFXsmwZOnTzEQSQOInEQiYNIHFXsO/E89ZxUHFV0OPF8lDhK2FfG2dcr4hiv4JzxlzgG211Gh1tZH/YZqeZq8kYcw+woo/MnwcQxRp1P9Gyw5xhgijKaOMoaXkYTR3/3TBsVymji6GyiMpo4epqrjCaObqYro4mjjxnLaOLoYNIymjjOVvZS7R7iONEsh12JOM4yexlNHGNVLqOJ4yTzbkJvieN4a5TRxHG4Zcpo4jjWSmU0cRxosTKaOI6yXhlNHIeY+hh0w1KfIb0dpG4v0wUOu5J1Zo53g9Tn1bxwGW2ZOD4cpCKz/aRltDXi2Ijg1D6W3ITeWiGObSf1sXwZbYFfML5/7A8cqiuU0WaPY8g3Ci9SRpt6WRny24zXKaPNO3N8fiexYwgvVUabdOY4ZI/5/PL60OMUeWPc03xxHDtIdz7a2oddyWTLykOD9FBGG+N6zTLaXHHsG6TPJ3K1rcabaZaV3S/fh4bt32e5bBltlpnjkIl9xxRy5TLaFHEcu+Qfu59duIxWf1k5fDN44HCuXUYrPnOc+jbhk1PI8mW0ynH0eQNZ/JdAxyq6rHQ7WrjIMO9TceYYcug05Oq/uHJxjD2O/O+zX6eMVm1ZGX5Qvf3IlyqjlYpjeBnbj3+1MlqdZaVIGW+GfAWmmhJxVCuDv8YvK8ooa3AcyqhsZBzKKG5YHMqob8C37J1FzqL3zKGMiXSNQxlz6ReHMqYz/pzjHWXUUSsOZZRSKA5lVNMvDrfh0+k6c7gNn8uAW1m34bMocWVPTYU2pFQjDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRD9AXcaNt4UVQI8AAAAAElFTkSuQmCC">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<style>
+
+_BOT_STYLE = """
   :root{
     --bg:#F5F5F3; --text:#1C1C1A; --text-muted:#767671; --text-faint:#A5A59F;
     --rule:#DBDBD6; --accent:#96622A; --green:#3E7A52; --red:#A3453A;
@@ -99,6 +92,9 @@ STATUS_PAGE = """<!doctype html>
     font-family:"IBM Plex Mono", monospace; font-size:0.7rem; letter-spacing:0.1em;
     text-transform:uppercase; color:var(--text-faint); margin:0 0 20px;
   }
+  .section-head{ display:flex; justify-content:space-between; align-items:baseline; margin:0 0 20px; }
+  .section-head .label{ margin:0; }
+  .section-link{ font-size:0.78rem; color:var(--accent); text-decoration:none; white-space:nowrap; }
   .stats{ display:grid; grid-template-columns:1fr 1fr; row-gap:20px; }
   .stat .n{ font-size:0.78rem; color:var(--text-muted); margin-bottom:3px; }
   .stat .v{ font-family:"IBM Plex Mono", monospace; font-variant-numeric:tabular-nums; font-size:1.1rem; }
@@ -126,7 +122,19 @@ STATUS_PAGE = """<!doctype html>
   }
   #pull-indicator.armed{ color:var(--accent); }
   @media (prefers-reduced-motion: reduce){ #pull-indicator{ transition:none; } }
-</style>
+"""
+
+_BOT_HEAD = """<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2396622A'/></svg>">
+<link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADsUlEQVR4nO3cQW4TMRiGYRdxGo7BRSpxA07SHXsu0rOxQKqi0m9IpjP2b8/z7JBQUslvbMdO8vTrx7cGH/ky+g+gLnEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRB9HX0H8CW55fX23/+/vm957M/+QXjmt5lcatbIuIoZyOLWx0Sseeo5c4yHvqfu4mDSByFPDoZnD15iINIHFXsmwZOnTzEQSQOInEQiYNIHFXsO/E89ZxUHFV0OPF8lDhK2FfG2dcr4hiv4JzxlzgG211Gh1tZH/YZqeZq8kYcw+woo/MnwcQxRp1P9Gyw5xhgijKaOMoaXkYTR3/3TBsVymji6GyiMpo4epqrjCaObqYro4mjjxnLaOLoYNIymjjOVvZS7R7iONEsh12JOM4yexlNHGNVLqOJ4yTzbkJvieN4a5TRxHG4Zcpo4jjWSmU0cRxosTKaOI6yXhlNHIeY+hh0w1KfIb0dpG4v0wUOu5J1Zo53g9Tn1bxwGW2ZOD4cpCKz/aRltDXi2Ijg1D6W3ITeWiGObSf1sXwZbYFfML5/7A8cqiuU0WaPY8g3Ci9SRpt6WRny24zXKaPNO3N8fiexYwgvVUabdOY4ZI/5/PL60OMUeWPc03xxHDtIdz7a2oddyWTLykOD9FBGG+N6zTLaXHHsG6TPJ3K1rcabaZaV3S/fh4bt32e5bBltlpnjkIl9xxRy5TLaFHEcu+Qfu59duIxWf1k5fDN44HCuXUYrPnOc+jbhk1PI8mW0ynH0eQNZ/JdAxyq6rHQ7WrjIMO9TceYYcug05Oq/uHJxjD2O/O+zX6eMVm1ZGX5Qvf3IlyqjlYpjeBnbj3+1MlqdZaVIGW+GfAWmmhJxVCuDv8YvK8ooa3AcyqhsZBzKKG5YHMqob8C37J1FzqL3zKGMiXSNQxlz6ReHMqYz/pzjHWXUUSsOZZRSKA5lVNMvDrfh0+k6c7gNn8uAW1m34bMocWVPTYU2pFQjDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRCJg0gcROIgEgeROIjEQSQOInEQiYNIHETiIBIHkTiIxEEkDiJxEImDSBxE4iASB5E4iMRBJA4icRD9AXcaNt4UVQI8AAAAAElFTkSuQmCC">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+"""
+
+STATUS_PAGE = """<!doctype html>
+<title>Journal de bord — {{ bot_label }}</title>
+""" + _BOT_HEAD + """<style>""" + _BOT_STYLE + """</style>
 
 <div id="pull-indicator">tirer pour rafraîchir</div>
 
@@ -187,7 +195,10 @@ STATUS_PAGE = """<!doctype html>
   </section>
 
   <section>
-    <p class="label">Journal</p>
+    <div class="section-head">
+      <p class="label">Journal</p>
+      <a class="section-link" href="/journal">Journal complet →</a>
+    </div>
     {% if journal %}
       {% for j in journal %}
       <div class="row">
@@ -205,7 +216,10 @@ STATUS_PAGE = """<!doctype html>
 
   {% if errors %}
   <section>
-    <p class="label">Dernières erreurs</p>
+    <div class="section-head">
+      <p class="label">Dernières erreurs</p>
+      <a class="section-link" href="/journal">Journal complet →</a>
+    </div>
     {% for e in errors %}
     <div class="row">
       <div>
@@ -264,6 +278,49 @@ STATUS_PAGE = """<!doctype html>
   });
 })();
 </script>
+"""
+
+JOURNAL_PAGE = """<!doctype html>
+<title>Journal — {{ bot_label }}</title>
+""" + _BOT_HEAD + """<style>""" + _BOT_STYLE + """</style>
+
+<div class="wrap">
+  <header>
+    <p class="kicker">{{ bot_label|capitalize }} — paper trading</p>
+    <div class="section-head"><h1 style="margin:0;">Journal</h1><a class="section-link" href="/">← Retour</a></div>
+  </header>
+
+  <section style="border-top:none; padding-top:0;">
+    <p class="label">Journal ({{ journal|length }})</p>
+    {% if journal %}
+      {% for j in journal %}
+      <div class="row">
+        <div>
+          <div class="detail">{{ j.ts }}</div>
+          <div class="name" style="font-size:0.82rem;font-weight:400;">{{ j.message }}</div>
+        </div>
+        <span class="side mono {{ 'buy' if j.author == 'manager' else '' }}">{{ j.author }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">Aucune entrée pour l'instant.</p>
+    {% endif %}
+  </section>
+
+  {% if errors %}
+  <section>
+    <p class="label">Erreurs ({{ errors|length }})</p>
+    {% for e in errors %}
+    <div class="row">
+      <div>
+        <div class="detail">{{ e.ts }}</div>
+        <div class="name" style="font-size:0.82rem;font-weight:400;">{{ e.message }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+</div>
 """
 
 
@@ -1423,8 +1480,8 @@ def health():
 
         state = db.load_state(initial_balance=pt_cfg["initial_balance"])
         trades = db.get_recent_trades(limit=8)
-        errors = db.get_recent_errors(limit=5)
-        journal = db.get_recent_journal(limit=8)
+        errors = db.get_recent_errors(limit=3)
+        journal = db.get_recent_journal(limit=5)
         # load_config_overrides() est déjà best-effort ({} si Supabase
         # est injoignable ou si la table n'existe pas) — voir supabase_state.py.
         strategy_overrides = db.load_config_overrides().get("strategy_overrides") or {}
@@ -1462,6 +1519,27 @@ def health():
         ), 200
     except Exception:
         return "OK - bot de paper trading en ligne. Utilise /tick pour déclencher un cycle.", 200
+
+
+@app.route("/journal")
+def journal_page():
+    # La page de statut ne garde qu'un aperçu très court (5 entrées de
+    # journal, 3 erreurs) pour rester consultable sans scroller des
+    # minutes — l'historique complet vit ici (même logique que /historique
+    # côté bot foot).
+    try:
+        journal = db.get_recent_journal(limit=200)
+        errors = db.get_recent_errors(limit=50)
+        journal_view = [{
+            "ts": _fmt_ts(j.get("ts")), "author": j.get("author"), "message": j.get("message"),
+        } for j in journal]
+        errors_view = [{"ts": _fmt_ts(e.get("ts")), "message": e.get("message")} for e in errors]
+        return render_template_string(
+            JOURNAL_PAGE, journal=journal_view, errors=errors_view,
+            bot_label=os.environ.get("BOT_LABEL") or "bot de trading crypto",
+        ), 200
+    except Exception:
+        return "OK - bot de paper trading en ligne.", 200
 
 
 @app.route("/tick")
