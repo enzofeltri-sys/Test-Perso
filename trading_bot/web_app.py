@@ -56,6 +56,8 @@ app = Flask(__name__)
 STATUS_PAGE = """<!doctype html>
 <title>Journal de bord — {{ bot_label }}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2396622A'/></svg>">
+<link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAABuElEQVR4nO3SMQHAIADAMEDOZCEKvTOw3uxIFPToPPsZ8GXdDuC/zEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB+kFAygCivQygtsAAAAASUVORK5CYII=">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,500&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -1039,6 +1041,7 @@ def _build_equity_chart_svg(series: list) -> str:
 ALL_PAGE = """<!doctype html>
 <title>Vue d'ensemble — 4 bots</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2396622A'/></svg>">
+<link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAABuElEQVR4nO3SMQHAIADAMEDOZCEKvTOw3uxIFPToPPsZ8GXdDuC/zEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB8kcJHOQzEEyB+kFAygCivQygtsAAAAASUVORK5CYII=">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
