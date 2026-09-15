@@ -817,7 +817,7 @@ _PAGE_STYLE = """
 html{ touch-action:pan-y; }
 body{
   background:var(--bg); color:var(--text); font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  line-height:1.55; overflow-x:hidden;
+  line-height:1.55; overflow-x:hidden; overflow-wrap:anywhere;
 }
 .wrap{ max-width:640px; margin:0 auto; padding:40px 20px 64px; }
 .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-variant-numeric:tabular-nums; }
@@ -852,6 +852,7 @@ a.link{ font-size:0.78rem; color:var(--text-muted); }
 .list li{ padding:6px 0; border-bottom:1px solid var(--rule); display:flex; gap:10px; }
 .list li:last-child{ border-bottom:none; }
 .list li .mono{ color:var(--text-faint); flex-shrink:0; }
+.list li .msg{ min-width:0; overflow-wrap:anywhere; }
 footer{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align:center; }
 .settings{ margin-top:32px; }
 .settings-toggle{ list-style:none; display:inline-flex; width:30px; height:30px; align-items:center; justify-content:center; border-radius:999px; cursor:pointer; color:var(--text-faint); }
@@ -923,13 +924,13 @@ def _render_status_page(
     main_journal = [j for j in journal if not is_preview(j)][:5]
 
     journal_items = "".join(
-        f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span> {_esc(j.get("message"))}</li>'
+        f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span><span class="msg">{_esc(j.get("message"))}</span></li>'
         for j in main_journal
     ) or '<li class="empty">Rien pour l\'instant.</li>'
 
     errors_block = ""
     if errors:
-        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span> {_esc(e.get("message"))}</li>' for e in errors[:3])
+        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span><span class="msg">{_esc(e.get("message"))}</span></li>' for e in errors[:3])
         errors_block = f'<div class="card"><h2>Erreurs récentes</h2><ul class="list">{errors_items}</ul></div>'
 
     chart_block = (
@@ -1070,13 +1071,13 @@ def _render_journal_page(journal: list, errors: list) -> str:
 
     def items(entries):
         return "".join(
-            f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span> {_esc(j.get("message"))}</li>'
+            f'<li><span class="mono">{_fmt_local(j.get("ts"))}</span><span class="msg">{_esc(j.get("message"))}</span></li>'
             for j in entries
         ) or '<li class="empty">Rien pour l\'instant.</li>'
 
     errors_block = ""
     if errors:
-        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span> {_esc(e.get("message"))}</li>' for e in errors)
+        errors_items = "".join(f'<li><span class="mono">{_fmt_local(e.get("ts"))}</span><span class="msg">{_esc(e.get("message"))}</span></li>' for e in errors)
         errors_block = f'<div class="card"><h2>Erreurs ({len(errors)})</h2><ul class="list">{errors_items}</ul></div>'
 
     preview_block = ""
