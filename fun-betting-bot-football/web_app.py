@@ -679,6 +679,34 @@ def admin_retrain():
     }), 202
 
 
+@app.route("/admin/clear-cache")
+def admin_clear_cache():
+    """Vide footballbot_team_refs (id API-Football, blessures, logos en
+    cache) — déclenché par le bouton "Vider le cache" (icône engrenage,
+    voir _render_status_page). Protégé par RETRAIN_TOKEN (même jeton que
+    /admin/retrain, pas de secret supplémentaire à gérer). Synchrone : un
+    DELETE est largement sous le timeout gunicorn, contrairement au
+    ré-entraînement complet."""
+    expected = os.environ.get("RETRAIN_TOKEN")
+    if not expected:
+        return "RETRAIN_TOKEN n'est pas défini — endpoint désactivé.", 404
+    if request.args.get("token") != expected:
+        return "Jeton invalide.", 403
+
+    try:
+        count = supabase_state.clear_team_refs_cache()
+    except Exception as exc:
+        supabase_state.log_error(f"admin/clear-cache: {exc}")
+        return f"<!doctype html><p>Erreur : {_esc(str(exc))}</p><p><a href=\"/\">Retour</a></p>", 500
+
+    return (
+        f"<!doctype html><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<body style=\"font-family:sans-serif;padding:40px;\">"
+        f"<p>Cache vidé — {count} équipe(s) réinitialisée(s).</p>"
+        f"<p><a href=\"/\">← Retour</a></p></body>"
+    )
+
+
 def _nice_step(raw_step: float) -> float:
     """Arrondit un pas d'axe au nombre rond juste au-dessus (1/2/5 × 10^n) —
     évite des graduations comme 733,4 sur l'axe Y."""
@@ -814,6 +842,15 @@ a.link{ font-size:0.78rem; color:var(--text-muted); }
 .list li:last-child{ border-bottom:none; }
 .list li .mono{ color:var(--text-faint); flex-shrink:0; }
 footer{ margin-top:24px; font-size:0.76rem; color:var(--text-faint); text-align:center; }
+.settings{ margin-top:32px; }
+.settings-toggle{ list-style:none; display:inline-flex; width:30px; height:30px; align-items:center; justify-content:center; border-radius:999px; cursor:pointer; color:var(--text-faint); }
+.settings-toggle::-webkit-details-marker{ display:none; }
+.settings-toggle:hover{ color:var(--text-muted); background:var(--card); }
+.settings-toggle svg{ width:18px; height:18px; }
+.settings-form{ display:flex; gap:8px; margin:14px 0 8px; flex-wrap:wrap; }
+.settings-form input{ font:inherit; font-size:0.82rem; padding:7px 10px; border-radius:8px; border:1px solid var(--rule); background:var(--bg); color:var(--text); min-width:0; flex:1; }
+.settings-form button{ font:inherit; font-size:0.82rem; padding:7px 14px; border-radius:8px; border:none; background:var(--card); color:var(--text); cursor:pointer; }
+.settings-form button:hover{ opacity:0.85; }
 """
 
 _PAGE_HEAD = """<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%238558d3'/></svg>">
@@ -952,6 +989,21 @@ def _render_status_page(
   {preview_block}
 
   {errors_block}
+
+  <details class="settings">
+    <summary class="settings-toggle" aria-label="Options">
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M 19.73 9.94 L 22.05 9.33 L 22.05 14.67 L 19.73 14.06 Z M 18.92 16.01 L 21.00 17.22 L 17.22 21.00 L 16.01 18.92 Z M 14.06 19.73 L 14.67 22.05 L 9.33 22.05 L 9.94 19.73 Z M 7.99 18.92 L 6.78 21.00 L 3.00 17.22 L 5.08 16.01 Z M 4.27 14.06 L 1.95 14.67 L 1.95 9.33 L 4.27 9.94 Z M 5.08 7.99 L 3.00 6.78 L 6.78 3.00 L 7.99 5.08 Z M 9.94 4.27 L 9.33 1.95 L 14.67 1.95 L 14.06 4.27 Z M 16.01 5.08 L 17.22 3.00 L 21.00 6.78 L 18.92 7.99 Z" fill="currentColor"/>
+        <circle cx="12" cy="12" r="5.4" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+      </svg>
+    </summary>
+    <form method="get" action="/admin/clear-cache" class="settings-form">
+      <input type="password" name="token" placeholder="jeton admin" required>
+      <button type="submit">Vider le cache</button>
+    </form>
+    <p class="sub">Réinitialise les blessures/logos/ids en cache (footballbot_team_refs) — force une nouvelle recherche à chaque source externe.</p>
+  </details>
 
   <footer>Lecture seule — <span class="mono">/tick</span> déclenche un cycle (pensé pour UptimeRobot).</footer>
 </div>

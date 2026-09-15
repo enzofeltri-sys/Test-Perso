@@ -480,6 +480,22 @@ def save_team_ref(team_name: str, **fields) -> None:
         pass
 
 
+def clear_team_refs_cache() -> int:
+    """Vide entièrement footballbot_team_refs (id API-Football, blessures,
+    logos en cache) — déclenché par le bouton "Vider le cache" (voir
+    web_app.admin_clear_cache), pour forcer une nouvelle recherche à
+    chaque source externe au prochain besoin. Retourne le nombre de
+    lignes supprimées. team_name=not.is.null : filtre toujours vrai
+    (clé primaire, jamais NULL) — PostgREST exige un filtre explicite
+    sur DELETE, même pour tout supprimer."""
+    url = f"{_base_url()}/{_table('team_refs')}"
+    headers = _headers()
+    headers["Prefer"] = "return=representation"
+    resp = requests.delete(url, headers=headers, params={"team_name": "not.is.null"}, timeout=15)
+    resp.raise_for_status()
+    return len(resp.json())
+
+
 # --------------------------------------------------------------------------
 # Journal / erreurs (best-effort, calqué sur trading_bot)
 # --------------------------------------------------------------------------
