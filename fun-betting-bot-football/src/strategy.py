@@ -124,4 +124,12 @@ def build_tickets(matches: list[dict]) -> list[dict]:
         if b["ev"] > config.SINGLE_EV_THRESHOLD:
             tickets.append(_make_ticket([b]))
 
-    return tickets
+    # config.MAX_SANE_EV n'a été vérifié plus haut que jambe par jambe
+    # (best_candidate_for_match) : chaque jambe d'un combiné peut être
+    # individuellement "sous le plafond" (EV <= 100%) alors que l'EV du
+    # TICKET, produit des probs/cotes de ses jambes, explose (observé en
+    # prod : combinés à +436%/+2901% d'EV après l'ajout de 3 championnats,
+    # qui ont rendu les EV individuelles proches du plafond plus
+    # fréquentes). Un pari seul reste inchangé par ce filtre (son EV est
+    # déjà celle de sa jambe unique, déjà passée par le même plafond).
+    return [t for t in tickets if t["ev"] <= config.MAX_SANE_EV]
