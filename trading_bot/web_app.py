@@ -1231,12 +1231,26 @@ ALL_PAGE = """<!doctype html>
         <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
       </svg>
     </summary>
-    <form method="get" action="{{ football_bot_url }}/admin/clear-cache" class="settings-form">
-      <input type="password" name="token" placeholder="jeton admin bot foot" required>
+    <form method="get" action="{{ football_bot_url }}/admin/clear-cache" class="settings-form" id="clear-cache-form">
+      <input type="password" name="token" id="clear-cache-token" placeholder="jeton admin bot foot" required>
       <button type="submit">Vider le cache</button>
     </form>
     <p class="settings-hint">Blessures/logos/ids en cache du bot foot uniquement — les 3 bots crypto n'ont pas de cache équivalent.</p>
   </details>
+  <script>
+    // Le jeton n'est jamais servi dans le HTML — mais une fois saisi, ton
+    // propre navigateur s'en souvient localement (localStorage) pour
+    // éviter de le retaper à chaque fois (même mécanisme que sur la page
+    // du bot foot).
+    (function() {
+      var input = document.getElementById("clear-cache-token");
+      var saved = localStorage.getItem("footballbot_admin_token");
+      if (saved) input.value = saved;
+      document.getElementById("clear-cache-form").addEventListener("submit", function() {
+        localStorage.setItem("footballbot_admin_token", input.value);
+      });
+    })();
+  </script>
   {% endif %}
 
   <footer>
