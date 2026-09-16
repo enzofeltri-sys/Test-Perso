@@ -101,24 +101,30 @@ si Enzo veut que ce soit permanent ou juste consultable au coup par coup.
 
 ## Blessures / fatigue (API-Football)
 
-### Le suivi des blessures ne fonctionne pas
-*Repéré le 2026-09-15.*
+### Le suivi des blessures ne fonctionne pas — ⏸️ abandonné, compte API-Football suspendu
+*Repéré le 2026-09-15, cause confirmée et décision prise le 2026-09-16.*
 
-`footballbot_team_refs` n'a qu'UNE ligne (Leeds) après 2+ jours et des
-dizaines d'équipes traitées, avec `injury_count` à `NULL`. Aucune mention
-"blessé(s)" dans le journal.
+Root cause finalement confirmée via `footballbot_errors` : le compte
+API-Football d'Enzo est suspendu (`"Your account is suspended"`), pas
+un bug de notre côté. Cause probable d'après le support API-Football :
+Render (hébergement gratuit) utilise des IPs sortantes partagées entre
+plein de comptes non-liés — le trafic abusif d'un AUTRE utilisateur
+Render sur la même IP a pu déclencher leur protection anti-abus pour
+tout le monde.
 
-Root cause pas encore confirmée : `_api_football_get()` avalait tout
-échec silencieusement (corrigé le 2026-09-15, voir plus bas), mais le
-premier cycle suivant le correctif n'a rejoué AUCUN appel API-Football
-(les 3 seuls matchs de ce cycle-là ont été rejetés avant, pour cause
-d'historique insuffisant — voir plus bas). Donc toujours pas de vraie
-réponse : à revérifier au prochain cycle qui traite au moins un match
-valide.
+Deux solutions existent mais coûtent de l'argent réel sur un projet
+100% gratuit/éducatif : IP dédiée Render (~$100/mois + nécessite un
+workspace Pro) ou plan payant API-Football (à partir de $19/mois).
+Vérifié qu'aucune alternative gratuite du document d'APIs fourni par
+Enzo ne couvre les blessures pour nos 5 championnats (Sportmonks gratuit
+= 2 championnats sans rapport ; TheSportsDB = métadonnées/logos, pas de
+suivi de blessures ; les autres n'en proposent pas du tout).
 
-**Piste** : rien à coder de plus pour l'instant — attendre qu'un cycle
-avec un vrai match déclenche `fetch_injury_count`, puis lire
-`footballbot_errors` pour la raison exacte.
+**Décision (Enzo, 2026-09-16)** : on continue sans les blessures plutôt
+que de payer pour une fonctionnalité purement informative (n'a jamais
+influencé le modèle ni les paris). Rien à coder — `fetch_injury_count`
+reste en place et retournera `None` tant que le compte n'est pas
+réactivé, sans jamais bloquer un cycle (déjà conçu comme best-effort).
 
 ### La fatigue coupe d'Europe semble marcher, mais peut-être seulement via le fallback
 *Repéré le 2026-09-15.*

@@ -151,6 +151,16 @@ n'avait encore été placé au moment de la découverte.
 
 ## Blessures et coupe d'Europe — affichage uniquement
 
+⚠️ **Blessures actuellement indisponibles** : le compte API-Football
+utilisé par ce projet a été suspendu par leur protection anti-abus
+(cause probable : IP sortante partagée par d'autres utilisateurs sur
+l'hébergement Render gratuit — voir `AMELIORATIONS.md`). Réactiver le
+compte coûterait de l'argent réel (IP dédiée ou plan payant) pour une
+fonctionnalité purement informative sur un projet gratuit — décision
+prise de continuer sans. La coupe d'Europe continue de fonctionner via
+le second avis football-data.org (voir plus bas), indépendant
+d'API-Football.
+
 Si `API_FOOTBALL_KEY` et/ou `FOOTBALL_DATA_ORG_KEY` sont configurées
 (`src/external_data.py`), le journal (`match_preview`) affiche en plus,
 pour chaque match considéré, le nombre de blessés de chaque équipe
