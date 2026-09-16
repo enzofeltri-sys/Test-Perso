@@ -135,6 +135,7 @@ def _settle_pending_bets(state: dict, errors: list) -> int:
                 actual = "D"
             results_by_key[(event["league"], home, away)] = {
                 "actual_result": actual, "total_goals": event["home_score"] + event["away_score"],
+                "home_score": event["home_score"], "away_score": event["away_score"],
             }
 
         now = _now()
@@ -146,7 +147,10 @@ def _settle_pending_bets(state: dict, errors: list) -> int:
             result = results_by_key.get((leg["league"], leg["home_team"], leg["away_team"]))
             if result is None:
                 continue
-            supabase_state.update_leg_result(leg["id"], "won" if _leg_won(leg, result) else "lost")
+            supabase_state.update_leg_result(
+                leg["id"], "won" if _leg_won(leg, result) else "lost",
+                home_score=result["home_score"], away_score=result["away_score"],
+            )
             touched_bet_ids.add(leg["bet_id"])
 
         # Aussi TOUS les tickets encore "pending" en base, pas seulement ceux
@@ -183,11 +187,17 @@ def _settle_pending_bets(state: dict, errors: list) -> int:
             supabase_state.finalize_ticket(bet_id, "won" if won else "lost", round(pnl, 2), round(state["bankroll"], 2))
 
             kind = "Pari simple" if len(legs) == 1 else f"Combiné ({len(legs)} matchs)"
-            legs_desc = ", ".join(
-                f"{leg['home_team']}-{leg['away_team']} : "
-                f"{_describe_selection(leg['market'], leg['selection'], leg['home_team'], leg['away_team'])}"
-                for leg in legs
-            )
+
+            def _leg_desc(leg: dict) -> str:
+                score = (
+                    f" ({leg['home_score']}-{leg['away_score']})"
+                    if leg.get("home_score") is not None and leg.get("away_score") is not None
+                    else ""
+                )
+                selection = _describe_selection(leg["market"], leg["selection"], leg["home_team"], leg["away_team"])
+                return f"{leg['home_team']}-{leg['away_team']}{score} : {selection}"
+
+            legs_desc = ", ".join(_leg_desc(leg) for leg in legs)
             supabase_state.log_journal_entry(
                 "bot",
                 f"Ticket réglé ({kind}) : {legs_desc} — "

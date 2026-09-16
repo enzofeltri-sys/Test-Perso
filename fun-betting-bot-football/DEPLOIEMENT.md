@@ -98,6 +98,8 @@ create table if not exists public.footballbot_bet_legs (
   prob numeric,
   odds numeric,
   result text not null default 'pending' check (result in ('pending', 'won', 'lost')),
+  home_score integer,
+  away_score integer,
   settled_at timestamptz
 );
 

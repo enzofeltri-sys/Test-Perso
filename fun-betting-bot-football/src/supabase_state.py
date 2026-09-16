@@ -314,9 +314,12 @@ def get_pending_legs() -> list:
     return resp.json()
 
 
-def update_leg_result(leg_id: int, result: str) -> None:
+def update_leg_result(leg_id: int, result: str, home_score: int = None, away_score: int = None) -> None:
     url = f"{_base_url()}/{_table('bet_legs')}"
-    payload = {"result": result, "settled_at": datetime.now(timezone.utc).isoformat()}
+    payload = {
+        "result": result, "settled_at": datetime.now(timezone.utc).isoformat(),
+        "home_score": home_score, "away_score": away_score,
+    }
     resp = requests.patch(url, headers=_headers(), params={"id": f"eq.{leg_id}"}, json=_sanitize_for_json(payload), timeout=15)
     resp.raise_for_status()
 
