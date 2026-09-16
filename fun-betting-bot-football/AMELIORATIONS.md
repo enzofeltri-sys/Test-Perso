@@ -140,6 +140,33 @@ tourne peut-être à 100% sur le second avis sans qu'on le sache.
 (voir ci-dessus), vérifier si elle affecte aussi `fetch_recent_uefa_fixture`
 (même fonction `_api_football_get` sous-jacente).
 
+### Détecter l'absence des meilleurs joueurs — idée notée, pas prioritaire
+*Proposé par Enzo le 2026-09-16, discuté, mis en attente.*
+
+Idée : repérer quand un joueur clé (top buteur/passeur d'une équipe) est
+absent (blessure, suspension, rotation) et en tenir compte dans le modèle,
+au-delà du simple compteur de blessures déjà abandonné (voir ci-dessus).
+
+Analyse faite avec Enzo : le gain attendu est probablement défensif plutôt
+qu'offensif. Les bookmakers intègrent une absence confirmée dans leurs
+cotes très vite, souvent avant même la sortie de la compo officielle — donc
+l'info est rarement "nouvelle" pour le marché au moment où on parie. Le
+bénéfice réel serait d'éviter que NOTRE modèle calcule une EV artificiellement
+gonflée parce qu'il ignore l'absence alors que la cote, elle, l'a déjà
+digérée (moins de faux positifs plutôt que de nouveaux paris gagnants).
+
+Deux prérequis avant de pouvoir seulement tester ça :
+1. Un score d'importance par joueur (calculable nous-mêmes : buts+passes
+   sur la saison, déjà dans les données disponibles).
+2. Une source fiable d'absences à temps — même blocage que les blessures
+   (compte API-Football suspendu) si on veut l'info en avance ; sinon
+   attendre les compos officielles (~1h avant le coup d'envoi) change la
+   mécanique actuelle du bot (cotes/EV calculées plus tôt).
+
+**Priorité** : jugée plus faible que le biais championnat manquant du
+modèle Poisson (potentiellement lié aux -31,81% de ROI résiduel, voir plus
+haut) — à reprendre après, pas maintenant.
+
 ## Données manquantes
 
 ### 3 clubs espagnols absents de l'historique
