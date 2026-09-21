@@ -155,6 +155,7 @@ STATUS_PAGE = """<!doctype html>
     <p class="label">État actuel</p>
     <div class="stats">
       <div class="stat"><div class="n">Cash</div><div class="v">${{ '%.2f'|format(cash) }}</div></div>
+      <div class="stat"><div class="n">Investi en positions</div><div class="v {{ 'zero' if not positions else '' }}">${{ '%.2f'|format(invested_total) }}</div></div>
       <div class="stat"><div class="n">Positions ouvertes</div><div class="v {{ 'zero' if not positions else '' }}">{{ positions|length }}</div></div>
       <div class="stat"><div class="n">Coupe-circuit jour</div><div class="v {{ 'bad' if daily_tripped else '' }}">{{ 'déclenché' if daily_tripped else 'ok' }}</div></div>
       <div class="stat"><div class="n">Coupe-circuit total</div><div class="v {{ 'bad' if total_tripped else '' }}">{{ 'déclenché' if total_tripped else 'ok' }}</div></div>
@@ -169,7 +170,7 @@ STATUS_PAGE = """<!doctype html>
       <div class="row">
         <div>
           <div class="name">{{ p.symbol }}</div>
-          <div class="detail">{{ '%.6f'|format(p.qty) }} @ ${{ '%.2f'|format(p.entry_price) }} · stop ${{ '%.2f'|format(p.stop_price) }} · target ${{ '%.2f'|format(p.target_price) }}</div>
+          <div class="detail">{{ '%.6f'|format(p.qty) }} @ ${{ '%.2f'|format(p.entry_price) }} → <strong>${{ '%.2f'|format(p.qty * p.entry_price) }} investis</strong> · stop ${{ '%.2f'|format(p.stop_price) }} · target ${{ '%.2f'|format(p.target_price) }}</div>
         </div>
         <span class="side mono">{{ p.active_substrategy or '—' }}</span>
       </div>
@@ -186,7 +187,7 @@ STATUS_PAGE = """<!doctype html>
       <div class="row">
         <div>
           <div class="name">{{ t.symbol }}</div>
-          <div class="detail">{{ t.ts }} · {{ t.reason }} · {{ '%.6f'|format(t.qty) }} @ ${{ '%.2f'|format(t.price) }}</div>
+          <div class="detail">{{ t.ts }} · {{ t.reason }} · {{ '%.6f'|format(t.qty) }} @ ${{ '%.2f'|format(t.price) }} → <strong>${{ '%.2f'|format(t.qty * t.price) }} {{ 'dépensés' if t.side == 'buy' else 'reçus' }}</strong></div>
         </div>
         <span class="side mono {{ t.side }}">{{ t.side }}</span>
       </div>
@@ -931,6 +932,7 @@ def _fetch_trading_bot_summary(prefix: str) -> dict:
         # max_positions_per_symbol), donc len(positions) sous-compterait.
         "stats": [
             {"label": "Cash", "value": f"${state.get('cash'):.2f}" if state.get("cash") is not None else "—"},
+            {"label": "Investi en positions", "value": f"${sum((p.get('qty') or 0) * (p.get('entry_price') or 0) for v in positions.values() for p in v):.2f}"},
             {"label": "Positions ouvertes", "value": sum(len(v) for v in positions.values())},
             {"label": "Positions clôturées", "value": sum(1 for t in trades_asc if t.get("side") == "sell")},
         ],
@@ -1522,6 +1524,11 @@ def health():
         ]
         daily_tripped = bool(state.get("daily_tripped_today"))
         total_tripped = bool(state.get("total_dd_tripped"))
+        # coût d'entrée des positions ouvertes (pas leur valeur de marché
+        # actuelle, qui demanderait un appel exchange supplémentaire rien
+        # que pour afficher la page) — répond à "combien d'argent est
+        # immobilisé en positions en ce moment", distinct du cash.
+        invested_total = sum((p.get("qty") or 0) * (p.get("entry_price") or 0) for p in positions)
 
         trades_view = [{
             "ts": _fmt_ts(t.get("ts")), "symbol": t.get("symbol"), "side": t.get("side"),
@@ -1536,7 +1543,7 @@ def health():
             STATUS_PAGE,
             healthy=not (daily_tripped or total_tripped),
             daily_tripped=daily_tripped, total_tripped=total_tripped,
-            cash=state["cash"], positions=positions,
+            cash=state["cash"], positions=positions, invested_total=invested_total,
             symbols=cfg["portfolio"]["symbols"],
             trades=trades_view, errors=errors_view, journal=journal_view,
             strategy_overrides=strategy_overrides,
