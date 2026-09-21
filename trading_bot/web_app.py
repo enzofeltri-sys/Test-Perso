@@ -653,6 +653,18 @@ def run_tick() -> dict:
             cash += proceeds - fee
             equity_now = cash + _position_value(positions, prices)
             db.log_trade(s, "sell", exit_price, pos["qty"], exit_reason, cash, equity_now)
+            # `last_trade_ts` a été lu une seule fois en DB au début du tick
+            # (voir plus haut) : sans cette ligne, une paire qui sort ICI
+            # (n'importe quelle raison, pas seulement take_profit) reste
+            # associée à sa date d'activité D'AVANT ce tick pour la
+            # vérification du cooldown en section 2) juste en dessous — un
+            # rachat immédiat passe alors le test puisqu'il compare `now` à
+            # un horodatage déjà ancien plutôt qu'à cette vente qui vient
+            # d'avoir lieu (bug réel repéré sur le bot #3 : ALGO, ARB, FIL,
+            # UNI rachetées dans la même seconde que leur sortie, cooldown
+            # de 6h totalement contourné). paper_trader.py n'a jamais eu ce
+            # bug : self.last_activity[s] y est mis à jour au même endroit.
+            last_trade_ts[s] = now.isoformat()
             trades_this_tick.append({"symbol": s, "side": "sell", "price": exit_price, "reason": exit_reason})
             pnl_pct = (exit_price / pos["entry_price"] - 1) * 100
             reason_label = {"stop_loss": "stop-loss touché", "take_profit": "objectif atteint",

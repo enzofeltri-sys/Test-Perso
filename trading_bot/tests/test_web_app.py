@@ -306,6 +306,38 @@ def test_run_tick_reentry_cooldown_allows_rebuy_once_elapsed(monkeypatch):
     assert result["open_positions"] == 1
 
 
+def test_run_tick_reentry_cooldown_blocks_rebuy_right_after_an_exit_in_the_same_tick(monkeypatch):
+    """Bug réel repéré sur le bot #3 (microbot) : ALGO/ARB/FIL/UNI rachetées
+    dans la même seconde que leur sortie, cooldown de 6h totalement
+    contourné. Root cause : last_trade_ts est lu une seule fois en DB au
+    début de run_tick() — une paire qui sort PENDANT ce tick garde donc son
+    ancienne date d'activité (déjà hors cooldown, sinon le bug serait
+    invisible) pour la vérification d'entrée qui suit dans le MÊME tick, au
+    lieu de la date de cette vente qui vient tout juste d'avoir lieu."""
+    cfg = _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=5)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    # dernière activité (avant ce test) il y a 10h -> déjà hors cooldown de
+    # 5h, exactement ce qui masque le bug si last_trade_ts n'est pas
+    # rafraîchi après la vente DE CE TICK.
+    fake_db.last_trade_ts_override = {
+        "BTC/USDT": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
+    }
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db, strategy_cls=_FlickerStrategy)
+
+    clock.idx += 1
+    web_app.run_tick()  # achète (aucune position ouverte avant)
+    clock.idx += 1
+    result = web_app.run_tick()  # vend (sortie sur signal) PUIS ré-évalue une entrée, même tick
+
+    assert result["ok"] is True
+    assert result["open_positions"] == 0, (
+        "rachat immédiat après une sortie dans le même tick : le cooldown "
+        "a été contourné car last_trade_ts n'a pas été mis à jour après la vente"
+    )
+
+
 def test_run_tick_sell_equity_after_does_not_double_count_the_closed_position(monkeypatch):
     """Régression (signalée sur le bot #2) : equity_after journalisé pour
     une vente comptait la position vendue une seconde fois — le cash de la
