@@ -844,10 +844,10 @@ def _fmt_ts(ts_str):
 # n'existe pas ailleurs, et l'inverse n'est pas dangereux non plus (un
 # bot pas encore migré affiche juste "aucune donnée pour l'instant").
 BOT_REGISTRY = [
-    {"prefix": "tradingbot", "label": "Bot #1 — BTC/ETH/SOL", "url": "https://test-perso.onrender.com", "kind": "trading"},
-    {"prefix": "altbot", "label": "Bot #2 — BNB/XRP/LINK", "url": "https://trading-bot-altcoins.onrender.com", "kind": "trading"},
-    {"prefix": "microbot", "label": "Bot #3 — 24 paires, 10$/position", "url": "https://trading-bot-microbets.onrender.com", "kind": "trading"},
-    {"prefix": "footballbot", "label": "Bot #4 — paris football", "url": "https://football-betting-bot.onrender.com", "kind": "betting"},
+    {"prefix": "tradingbot", "label": "Bot #1 — BTC/ETH/SOL", "url": "https://bot-1-rmcz.onrender.com", "kind": "trading"},
+    {"prefix": "altbot", "label": "Bot #2 — BNB/XRP/LINK", "url": "https://test-perso-6502.onrender.com", "kind": "trading"},
+    {"prefix": "microbot", "label": "Bot #3 — 24 paires, 10$/position", "url": "https://test-perso-xb3y.onrender.com", "kind": "trading"},
+    {"prefix": "footballbot", "label": "Bot #4 — paris football", "url": "https://bot-4-pi39.onrender.com", "kind": "betting"},
 ]
 
 # Fenêtres du graphique combiné de /all : (clé, libellé, delta depuis
