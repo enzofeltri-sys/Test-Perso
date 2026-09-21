@@ -866,6 +866,35 @@ def _fake_requests_get(monkeypatch, tables):
     return calls
 
 
+def test_fetch_betting_bot_summary_sorts_equity_points_by_settlement_time(monkeypatch):
+    """Bug réel repéré sur /all (la courbe du bot foot zigzaguait) :
+    `bets_asc` est trié par ts de PLACEMENT du pari, mais deux paris placés
+    le même jour peuvent être réglés (settled_at) dans un ordre totalement
+    différent, parfois à plusieurs jours d'écart. _build_equity_chart_svg
+    dessine les points dans l'ordre reçu sans les trier lui-même (voir sa
+    docstring : "points DÉJÀ triés croissants par date") — sans tri
+    explicite par settled_at ici, la ligne irait d'avant en arrière dans
+    le temps au lieu de tracer une courbe propre."""
+    _fake_requests_get(monkeypatch, {
+        "footballbot_state": [{"bankroll": 950.0}],
+        "footballbot_bets": [
+            # placé en premier (ts) mais réglé en DERNIER (settled_at)
+            {"ts": "2026-09-13T00:00:00Z", "status": "lost", "stake": 5.0, "odds": 2.0,
+             "settled_at": "2026-09-20T00:00:00Z", "bankroll_after": 900.0},
+            # placé en second (ts) mais réglé en PREMIER (settled_at)
+            {"ts": "2026-09-14T00:00:00Z", "status": "won", "stake": 5.0, "odds": 2.0,
+             "settled_at": "2026-09-15T00:00:00Z", "bankroll_after": 950.0},
+        ],
+    })
+
+    summary = web_app._fetch_bot_summary("footballbot", "betting")
+
+    assert summary["equity_points"] == [
+        ("2026-09-15T00:00:00Z", 950.0),
+        ("2026-09-20T00:00:00Z", 900.0),
+    ]
+
+
 def test_fetch_bot_summary_reads_the_given_prefix_only(monkeypatch):
     """/all garde le résumé chiffré (cash, positions) mais pas le détail
     trade-par-trade ni le journal — ça reste sur la page propre à chaque

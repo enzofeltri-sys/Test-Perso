@@ -968,8 +968,18 @@ def _fetch_betting_bot_summary(prefix: str) -> dict:
             {"label": "Paris en attente", "value": len(pending)},
             {"label": "Paris réglés", "value": f"{len(settled)} ({win_rate:.0f}% gagnés)" if settled else "0"},
         ],
-        "equity_points": [(b["settled_at"], b["bankroll_after"]) for b in settled
-                           if b.get("settled_at") and b.get("bankroll_after") is not None],
+        # tri par settled_at : _build_equity_chart_svg attend des points déjà
+        # triés (elle ne les trie pas elle-même) et dessine dans l'ordre
+        # reçu — `settled` hérite de l'ordre de `bets_asc` (tri par ts de
+        # PLACEMENT du pari, pas de RÈGLEMENT), donc sans ce tri la ligne
+        # zigzague : des paris placés le même jour se règlent parfois à
+        # plusieurs jours d'écart (bug repéré sur /all, ligne du bot foot
+        # visuellement chaotique).
+        "equity_points": sorted(
+            ((b["settled_at"], b["bankroll_after"]) for b in settled
+             if b.get("settled_at") and b.get("bankroll_after") is not None),
+            key=lambda p: p[0],
+        ),
     }
 
 
