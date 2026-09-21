@@ -360,7 +360,7 @@ def _ticket_card(t: dict) -> str:
 
     legs_html = "".join(leg_html(leg) for leg in legs)
     return (
-        f'<div class="bet-row"><div class="bet-match">{kind} · {len(legs)} match(s) '
+        f'<div class="bet-row" data-status="{_esc(t.get("status"))}"><div class="bet-match">{kind} · {len(legs)} match(s) '
         f'<span class="bet-league">cote totale {odds:.2f} · prob {float(t.get("prob") or 0):.0%}</span></div>'
         f'{legs_html}'
         f'<div class="bet-meta"><span class="pill pill-{_esc(t.get("status"))}">{_esc(t.get("status"))}</span>'
@@ -858,6 +858,10 @@ a.link{ font-size:0.78rem; color:var(--text-muted); }
 .pill-won{ background:var(--pill-won-bg); color:var(--pill-won-text); }
 .pill-lost{ background:var(--pill-lost-bg); color:var(--pill-lost-text); }
 .pill-pending{ background:var(--pill-pending-bg); color:var(--pill-pending-text); }
+.filter-bar{ display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+.filter-btn{ font:inherit; font-size:0.82rem; padding:6px 14px; border-radius:999px; border:1px solid var(--rule); background:var(--card); color:var(--text-muted); cursor:pointer; }
+.filter-btn:hover{ color:var(--text); }
+.filter-btn.active{ background:var(--text); color:var(--bg); border-color:var(--text); }
 .list{ list-style:none; font-size:0.82rem; }
 .list li{ padding:6px 0; border-bottom:1px solid var(--rule); display:flex; gap:10px; }
 .list li:last-child{ border-bottom:none; }
@@ -1043,6 +1047,8 @@ def _render_history_page(settled_tickets: list) -> str:
     n'en garde que les 3 derniers pour ne pas noyer les paris en cours."""
     label = os.environ.get("BOT_LABEL") or "bot de paris football virtuels"
     cards = "".join(_ticket_card(t) for t in settled_tickets) or '<p class="empty">Aucun pari réglé pour l\'instant.</p>'
+    won_count = sum(1 for t in settled_tickets if t.get("status") == "won")
+    lost_count = sum(1 for t in settled_tickets if t.get("status") == "lost")
 
     return f"""<!doctype html>
 <html lang="fr">
@@ -1059,10 +1065,38 @@ def _render_history_page(settled_tickets: list) -> str:
   <div class="card-head"><h1>Historique</h1><a class="link" href="/">← Retour</a></div>
   <p class="disclaimer">Tous les tickets réglés (gagnés et perdus), les plus récents d'abord.</p>
 
+  <div class="filter-bar" role="group" aria-label="Filtrer par résultat">
+    <button type="button" class="filter-btn active" data-filter="all">Tous ({len(settled_tickets)})</button>
+    <button type="button" class="filter-btn" data-filter="won">Gagnés ({won_count})</button>
+    <button type="button" class="filter-btn" data-filter="lost">Perdus ({lost_count})</button>
+  </div>
+
   <div class="card">
     {cards}
+    <p class="empty" id="filter-empty" hidden>Aucun ticket dans cette catégorie.</p>
   </div>
 </div>
+<script>
+(function() {{
+  var buttons = document.querySelectorAll(".filter-btn");
+  var rows = document.querySelectorAll(".bet-row");
+  var emptyNote = document.getElementById("filter-empty");
+  buttons.forEach(function(btn) {{
+    btn.addEventListener("click", function() {{
+      buttons.forEach(function(b) {{ b.classList.remove("active"); }});
+      btn.classList.add("active");
+      var filter = btn.dataset.filter;
+      var visibleCount = 0;
+      rows.forEach(function(row) {{
+        var show = filter === "all" || row.dataset.status === filter;
+        row.hidden = !show;
+        if (show) visibleCount++;
+      }});
+      if (emptyNote) emptyNote.hidden = visibleCount !== 0;
+    }});
+  }});
+}})();
+</script>
 </body>
 </html>"""
 
