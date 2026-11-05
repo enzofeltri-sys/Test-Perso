@@ -49,11 +49,37 @@ def compute_stake(
     return max(0.0, round(bankroll * fraction, 2))
 
 
+def market_implied_prob(odds: float) -> float:
+    """Probabilité IMPLICITE du marché (1/cote) — inclut la marge du
+    bookmaker, donc légèrement sous-estime la vraie probabilité plutôt
+    que de la surestimer : un biais dans le sens prudent pour un mélange
+    (voir blended_prob)."""
+    return 1.0 / odds if odds > 1 else 0.0
+
+
+def blended_prob(model_prob: float, odds: float,
+                  model_weight: float = config.MODEL_PROB_WEIGHT) -> float:
+    """Mélange la proba du MODÈLE (Poisson, sur peu de features) avec la
+    proba IMPLICITE du marché — jamais le modèle seul pour décider d'un
+    pari réel. Voir config.MODEL_PROB_WEIGHT : le marché agrège l'avis de
+    nombreux parieurs et tire les estimations extrêmes du modèle vers le
+    centre, ce qui compte puisque build_tickets trie et sélectionne par
+    EV décroissante — sans ce mélange, les paris retenus sont justement
+    ceux où le modèle est le PLUS en désaccord avec le marché, pas
+    forcément ceux où il a raison."""
+    return model_weight * model_prob + (1 - model_weight) * market_implied_prob(odds)
+
+
 def best_candidate_for_match(candidates: list[dict]) -> dict | None:
     """Parmi les candidats d'UN match (issus de markets.build_candidates),
     retourne celui à l'EV la plus haute PARMI LES COTES RÉELLES uniquement
     — jamais une cote estimée : le bot ne parie jamais contre sa propre
     estimation faute de prix de marché indépendant (voir src/markets.py).
+    La proba utilisée pour l'EV (et, en aval, le dimensionnement de la
+    mise — voir compute_stake) est la proba MÉLANGÉE (blended_prob), pas
+    la proba brute du modèle : le candidat retourné a son champ "prob"
+    remplacé par cette valeur, pour que tout le reste du pipeline
+    (_make_ticket, compute_stake, l'affichage) l'utilise sans changement.
     Ignore aussi les candidats dont l'EV dépasse config.MAX_SANE_EV (voir
     ce commentaire) : une EV énorme trahit presque toujours une probabilité
     de modèle aberrante plutôt qu'une vraie occasion, un autre candidat du
@@ -62,7 +88,11 @@ def best_candidate_for_match(candidates: list[dict]) -> dict | None:
     real = [c for c in candidates if not c["is_estimated"] and _is_valid_odds(c.get("odds"))]
     if not real:
         return None
-    scored = [{**c, "ev": calculate_ev(c["prob"], c["odds"])} for c in real]
+    scored = [
+        {**c, "prob": blended_prob(c["prob"], c["odds"]),
+         "ev": calculate_ev(blended_prob(c["prob"], c["odds"]), c["odds"])}
+        for c in real
+    ]
     sane = [c for c in scored if c["ev"] <= config.MAX_SANE_EV]
     if not sane:
         return None

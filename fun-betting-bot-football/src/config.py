@@ -209,13 +209,31 @@ INITIAL_BANKROLL = 1000.0
 # forme ne mérite pas une confiance illimitée.
 SINGLE_EV_THRESHOLD = 0.10       # pari seul : EV > 10%
 COMBO_LEG_EV_THRESHOLD = 0.15    # chaque jambe d'un combiné doit être plus solide qu'un pari seul
+# Mélange proba du modèle (Poisson) / proba IMPLICITE du marché (1/cote,
+# avant retrait de marge) pour le calcul d'EV et le dimensionnement —
+# jamais la proba du modèle seule. Bilan réel observé (33 paris, dont 16
+# après le plafond MAX_SANE_EV ci-dessous) : seulement 2 gagnés sur 14
+# réglés, alors que le tri par EV DÉCROISSANTE (voir build_tickets)
+# sélectionne en priorité les estimations les plus extrêmes du modèle —
+# or une EV extrême de CE modèle trahit plus souvent sa propre
+# surconfiance qu'une vraie occasion, surtout sur des équipes à peu de
+# matchs récents. Le marché agrège l'avis de nombreux parieurs ; il n'est
+# pas infaillible (c'est justement pourquoi on garde une part de modèle)
+# mais sert de contrepoids qui tire les probas extrêmes vers le centre.
+# 0.5 = parts égales ; 1.0 reviendrait au modèle seul (comportement
+# précédent).
+MODEL_PROB_WEIGHT = 0.5
 # Plafond de bon sens, complémentaire à MIN_RECENT_MATCHES (features.py) :
 # une EV réelle et durable dépasse rarement quelques dizaines de %. Une EV
 # calculée au-delà de ce plafond (observées en prod : +178% à +286%, sur
 # des équipes à données rares) trahit presque toujours une probabilité de
 # modèle aberrante plutôt qu'une vraie occasion — le candidat est ignoré
 # plutôt que parié, même si une autre sélection du même match reste éligible.
-MAX_SANE_EV = 1.0                # 100% : au-delà, on ne fait plus confiance à l'EV calculée
+# Abaissé de 1.0 (100%) à 0.5 (50%) : même après le mélange ci-dessus et le
+# plafond précédent, les paris réels dépassant +50% d'EV perdent largement
+# plus qu'ils ne gagnent (voir le bilan ci-dessus) — un second tour de vis,
+# pas une garantie de rentabilité sur ce qui reste.
+MAX_SANE_EV = 0.5                # 50% : au-delà, on ne fait plus confiance à l'EV calculée
 MAX_COMBO_LEGS = 3               # jamais plus de 3 matchs dans un même pari combiné
 KELLY_MULTIPLIER = 0.15          # fraction de Kelly (0.15, plus prudent que le "quart de Kelly" classique)
 MAX_STAKE_FRACTION = 0.03        # garde-fou : jamais plus de 3% de la bankroll sur un seul pari/combiné
