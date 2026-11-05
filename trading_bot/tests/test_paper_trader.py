@@ -174,3 +174,48 @@ def test_sell_equity_after_does_not_double_count_the_closed_position(monkeypatch
         f"({sell['cash_after']}) puisqu'aucune position n'est plus ouverte — "
         "l'écart correspond à la valeur de la position comptée deux fois"
     )
+
+
+def test_position_value_falls_back_instead_of_zeroing_a_symbol_that_fails_to_fetch(monkeypatch, tmp_path):
+    """Même bug corrigé côté web_app.py/run_tick : quand fetch_latest_candles
+    échoue pour UN symbole (429 KuCoin), ses positions ouvertes ne doivent
+    pas être comptées comme valant 0$ — ça ferait chuter l'équity perçue et
+    pourrait déclencher à tort TotalDrawdownCircuitBreaker (ne se réarme
+    jamais seul)."""
+    trader = _make_trader(
+        monkeypatch, _AlwaysEnterStrategy, symbols=("BTC/USDT", "ETH/USDT"),
+        max_positions_per_symbol=1, max_total_drawdown_pct=0.20,
+        log_file=str(tmp_path / "trades.csv"),
+    )
+    # positions déjà ouvertes, directement posées (pas besoin de rejouer
+    # l'ouverture) ; plus haut historique fixé à leur valeur d'entrée.
+    trader.positions = {
+        "BTC/USDT": [{"qty": 5.0, "entry_price": 100.0, "stop_price": 1.0,
+                      "target_price": 1_000_000.0, "regime": "trend"}],
+        "ETH/USDT": [{"qty": 4.0, "entry_price": 50.0, "stop_price": 1.0,
+                      "target_price": 1_000_000.0, "regime": "trend"}],
+    }
+    trader.cash = 100.0
+    trader.total_dd_breaker._peak_equity = 800.0  # 100 + 5*100 + 4*50
+
+    histories = {
+        "BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0),
+        "ETH/USDT": make_ohlcv(seed=1, n=50, start=50.0),
+    }
+    clock = Clock(idx=10)
+    base_fetch = _fake_fetch_latest_candles(histories, clock)
+
+    def _fetch_eth_fails(exchange, symbol, timeframe, limit=200):
+        if symbol == "ETH/USDT":
+            raise RuntimeError('kucoin {"code":"429000","msg":"Too many requests."}')
+        return base_fetch(exchange, symbol, timeframe, limit=limit)
+
+    monkeypatch.setattr(paper_trader.data, "fetch_latest_candles", _fetch_eth_fails)
+
+    clock.idx += 1
+    trader.run_once()  # ETH échoue ce cycle ; BTC reste proche de son prix d'entrée
+
+    assert not trader.total_dd_breaker.tripped, (
+        "ETH compté comme valant 0$ (bug) aurait fait chuter l'équity de ~310$ (-39%), "
+        "largement au-delà du seuil de -20%, sans aucune vraie perte sur les deux positions"
+    )

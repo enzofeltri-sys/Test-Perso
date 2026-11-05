@@ -82,6 +82,38 @@ def test_total_drawdown_breaker_trips_and_stays_tripped():
     assert not breaker.can_open_new_position()  # ...reste déclenché, par design
 
 
+def test_total_drawdown_breaker_requires_confirm_cycles_before_tripping():
+    """confirm_cycles > 1 : une seule équity aberrante (ex. bug de prix
+    manquant) ne doit pas suffire à verrouiller un coupe-circuit qui ne
+    se réarme jamais seul — il faut plusieurs cycles CONSÉCUTIFS."""
+    breaker = TotalDrawdownCircuitBreaker(max_total_drawdown_pct=0.20, confirm_cycles=3)
+
+    breaker.update(1000)
+    breaker.update(1200)  # plus haut
+    breaker.update(900)   # 1er cycle sous le seuil (-25%)
+    assert breaker.can_open_new_position()
+    breaker.update(900)   # 2e cycle
+    assert breaker.can_open_new_position()
+    breaker.update(900)   # 3e cycle consécutif -> verrouille
+    assert not breaker.can_open_new_position()
+
+
+def test_total_drawdown_breaker_confirm_cycles_resets_on_recovery():
+    """Un dépassement isolé (pas confirmé sur confirm_cycles cycles
+    consécutifs) ne doit pas s'additionner avec un dépassement futur sans
+    rapport — le compteur se remet à zéro dès qu'un cycle repasse au-dessus
+    du seuil."""
+    breaker = TotalDrawdownCircuitBreaker(max_total_drawdown_pct=0.20, confirm_cycles=3)
+
+    breaker.update(1000)
+    breaker.update(900)  # -10%, pas encore sous le seuil de -20%... (pas un dépassement)
+    breaker.update(1000)
+    breaker.update(780)  # -22% : 1er cycle sous le seuil
+    breaker.update(1000)  # remonte au-dessus du seuil -> compteur remis à zéro
+    breaker.update(780)  # 1er cycle à nouveau (pas un 2e consécutif)
+    assert breaker.can_open_new_position()
+
+
 def test_position_size_caps_concentration_when_stop_is_tight():
     """Régression du cas réel observé le 09/09/2026 : stop à 0,75% du prix,
     le sizing par le risque demandait 133% du capital, donc le cash bornait

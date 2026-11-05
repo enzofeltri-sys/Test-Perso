@@ -65,6 +65,11 @@ class PortfolioPaperTrader:
         # stratégie du symbole.
         self.positions = {s: [] for s in symbols}
         self.last_activity = {s: None for s in symbols}  # dernier achat OU vente sur cette paire (cooldown)
+        # dernier prix connu par symbole — repli quand fetch_latest_candles
+        # échoue pour une paire un cycle donné (voir _step), pour ne jamais
+        # compter ses positions ouvertes comme valant 0$ (même bug corrigé
+        # côté web_app.py/run_tick, voir son historique).
+        self.last_known_price = {}
 
         self.daily_breaker = DailyLossCircuitBreaker(max_daily_loss_pct) if max_daily_loss_pct else None
         self.total_dd_breaker = TotalDrawdownCircuitBreaker(max_total_drawdown_pct) if max_total_drawdown_pct else None
@@ -102,9 +107,17 @@ class PortfolioPaperTrader:
             return
 
         prices = {s: rows[s]["close"] for s in rows}
+        self.last_known_price.update(prices)
 
         def _position_value():
-            return sum(p["qty"] * prices[s] for s in rows for p in self.positions.get(s, []))
+            total = 0.0
+            for s, open_positions in self.positions.items():
+                for p in open_positions:
+                    price = prices.get(s)
+                    if price is None:
+                        price = self.last_known_price.get(s, p["entry_price"])
+                    total += p["qty"] * price
+            return total
 
         equity = self.cash + _position_value()
 

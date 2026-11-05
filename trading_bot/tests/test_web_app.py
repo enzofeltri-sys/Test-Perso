@@ -17,6 +17,7 @@ wrapper, pas sur une sous-stratégie choisie à la main AVANT confirmation).
 
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -114,6 +115,32 @@ def _fake_fetch_latest_candles(histories, clock):
     return _fetch
 
 
+def _fake_fetch_with_failures(histories, clock, fail_symbols):
+    """Comme _fake_fetch_latest_candles, mais lève pour tout symbole présent
+    dans `fail_symbols` (set MUTABLE — le test le modifie entre deux appels
+    à run_tick() pour simuler un 429 KuCoin partiel et transitoire, qui
+    touche un sous-ensemble des paires un cycle donné puis disparaît)."""
+    base_fetch = _fake_fetch_latest_candles(histories, clock)
+
+    def _fetch(exchange, symbol, timeframe, limit=200):
+        if symbol in fail_symbols:
+            raise RuntimeError('kucoin {"code":"429000","msg":"Too many requests."}')
+        return base_fetch(exchange, symbol, timeframe, limit=limit)
+    return _fetch
+
+
+def _flat_ohlcv(prices):
+    """OHLCV déterministe (open=high=low=close=prices[i]) — contrôle exact
+    de l'équity à chaque tick, contrairement à make_ohlcv (marche aléatoire),
+    pour tester un franchissement précis du seuil de drawdown."""
+    index = pd.date_range("2023-01-01", periods=len(prices), freq="h")
+    return pd.DataFrame(
+        {"open": prices, "high": prices, "low": prices, "close": prices,
+         "volume": [500.0] * len(prices)},
+        index=index,
+    )
+
+
 class _AlwaysEnterStrategy:
     """Stub (même interface qu'une RegimeSwitchingStrategy) : entre dès que
     possible, ne sort jamais d'elle-même (stop/target hors de portée) —
@@ -159,12 +186,13 @@ class _FlickerStrategy(_AlwaysEnterStrategy):
         return True
 
 
-def _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=None, max_concurrent_positions=100):
+def _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=None, max_concurrent_positions=100,
+                  max_total_drawdown_pct=0.9, total_dd_confirm_cycles=None, symbols=("BTC/USDT",)):
     """Config minimale pour exercer run_tick() sans dépendre de config.yaml
-    — un seul symbole, une stratégie stub (voir _AlwaysEnterStrategy)."""
+    — un seul symbole par défaut, une stratégie stub (voir _AlwaysEnterStrategy)."""
     return {
         "portfolio": {
-            "symbols": ["BTC/USDT"],
+            "symbols": list(symbols),
             "max_concurrent_positions": max_concurrent_positions,
             "max_positions_per_symbol": max_positions_per_symbol,
             "momentum_lookback": 20,
@@ -174,7 +202,8 @@ def _minimal_cfg(max_positions_per_symbol=1, reentry_cooldown_hours=None, max_co
             "max_position_notional_usd": 10.0,
             "reentry_cooldown_hours": reentry_cooldown_hours,
             "max_daily_loss_pct": 0.5,
-            "max_total_drawdown_pct": 0.9,
+            "max_total_drawdown_pct": max_total_drawdown_pct,
+            "total_dd_confirm_cycles": total_dd_confirm_cycles,
         },
         "paper_trading": {"initial_balance": 1000.0, "lookback_candles": 200},
         "exchange": {"id": "kucoin", "timeframe": "1h"},
@@ -206,6 +235,144 @@ def test_normalize_positions_passes_through_new_list_format_unchanged():
 def test_normalize_positions_handles_missing_or_empty_input():
     assert web_app._normalize_positions(None) == {}
     assert web_app._normalize_positions({}) == {}
+
+
+def test_position_value_falls_back_to_last_known_price_when_fetch_fails():
+    """Bug réel (Bot #1, #2) : un symbole absent de `prices` (429 KuCoin ce
+    cycle) comptait ses positions comme valant 0$ au lieu d'utiliser un
+    prix de repli — ça pouvait faire chuter l'équity calculée de
+    plusieurs dizaines de % et déclencher à tort le coupe-circuit de
+    drawdown total (voir TotalDrawdownCircuitBreaker, ne se réarme jamais
+    seul)."""
+    positions = {
+        "BTC/USDT": [{"qty": 1.0, "entry_price": 100.0}],
+        "ETH/USDT": [{"qty": 2.0, "entry_price": 50.0}],
+    }
+    # ETH absent de `prices` (échec de récupération ce cycle) ; dernier
+    # prix connu disponible pour lui -> utilisé plutôt que l'entrée.
+    value = web_app._position_value(
+        positions, prices={"BTC/USDT": 110.0}, last_known_prices={"ETH/USDT": 55.0},
+    )
+    assert value == pytest.approx(1.0 * 110.0 + 2.0 * 55.0)
+
+    # Ni prix courant ni dernier prix connu pour ETH -> repli sur le prix
+    # d'ENTRÉE de la position (jamais 0$).
+    value = web_app._position_value(positions, prices={"BTC/USDT": 110.0}, last_known_prices={})
+    assert value == pytest.approx(1.0 * 110.0 + 2.0 * 50.0)
+
+
+def _seeded_breaker_state(cash, positions, peak_equity):
+    return {
+        "cash": cash, "positions": positions,
+        "daily_current_day": None, "daily_equity_at_day_start": None, "daily_tripped_today": False,
+        "total_dd_peak_equity": peak_equity, "total_dd_tripped": False,
+        "total_dd_consecutive_breaches": 0,
+    }
+
+
+def test_run_tick_never_evaluates_circuit_breakers_on_incomplete_price_data(monkeypatch):
+    """Bug réel (Bot #1 bloqué du 02/10 au 31/10, Bot #2 le 21/10) : quand
+    une paire échoue (429 KuCoin) pendant qu'une autre paire s'effondre
+    vraiment, l'équity de repli (voir test ci-dessus) peut quand même
+    sembler franchir le seuil de drawdown — mais elle reste une ESTIMATION
+    ce cycle-là, pas une donnée confirmée. Le coupe-circuit de drawdown
+    total ne se réarmant jamais seul, il ne doit JAMAIS être évalué tant
+    qu'au moins une paire a échoué ce cycle : le même franchissement,
+    confirmé sur un cycle aux données complètes, doit en revanche déclencher
+    normalement."""
+    cfg = _minimal_cfg(max_positions_per_symbol=1, max_concurrent_positions=100,
+                        max_total_drawdown_pct=0.20, symbols=("BTC/USDT", "ETH/USDT"))
+    monkeypatch.setattr(web_app, "_LAST_KNOWN_PRICE", {})  # isolation entre tests
+    # BTC s'effondre (100 -> 40) à l'indice 11 et reste effondré ; ETH
+    # reste plat à 50 — seul BTC bouge, pour isoler l'effet du "trou" côté ETH.
+    histories = {
+        "BTC/USDT": _flat_ohlcv([100.0] * 11 + [40.0, 40.0]),
+        "ETH/USDT": _flat_ohlcv([50.0] * 13),
+    }
+    clock = Clock(idx=10)
+    fail_symbols = set()
+    fake_db = FakeDB()
+    # positions déjà ouvertes, valant 800 au total avec cash=100 -> pair
+    # avec le "plus haut historique" ci-dessous, c'est la valeur de
+    # référence : AUCUN drawdown tant que les prix ne bougent pas.
+    fake_db.state = _seeded_breaker_state(
+        cash=100.0,
+        positions={
+            "BTC/USDT": [{"qty": 5.0, "entry_price": 100.0, "stop_price": 1.0,
+                          "target_price": 1_000_000.0, "active_substrategy": "trend"}],
+            "ETH/USDT": [{"qty": 4.0, "entry_price": 50.0, "stop_price": 1.0,
+                         "target_price": 1_000_000.0, "active_substrategy": "trend"}],
+        },
+        peak_equity=800.0,
+    )
+    monkeypatch.setattr(web_app, "load_config", lambda: cfg)
+    monkeypatch.setattr(web_app, "regime_strategy_from_config", lambda strategy_cfg: _AlwaysEnterStrategy())
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles",
+                         _fake_fetch_with_failures(histories, clock, fail_symbols))
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    # Cycle 1 : BTC vient de s'effondrer (40$, -60%) MAIS ETH échoue ce
+    # cycle (429 simulé) -> équity de repli = 100 + 5*40 + 4*50 (repli sur
+    # le prix d'entrée pour ETH) = 500, soit -37.5% vs le plus haut (800).
+    # Un vrai dépassement, mais sur des données incomplètes.
+    fail_symbols.add("ETH/USDT")
+    clock.idx += 1
+    result_1 = web_app.run_tick()
+    assert result_1["errors"], "le scénario doit produire une erreur de récupération ce cycle"
+    assert result_1["total_drawdown_breaker_tripped"] is False, (
+        "le coupe-circuit ne doit jamais être évalué sur un cycle aux données incomplètes"
+    )
+    assert fake_db.state["total_dd_peak_equity"] == 800.0, (
+        "le plus haut historique ne doit pas non plus bouger : update() n'a jamais été appelé"
+    )
+
+    # Cycle 2 : ETH répond de nouveau (toujours à 50$) -> données complètes,
+    # le même dépassement doit maintenant être évalué et déclencher.
+    fail_symbols.discard("ETH/USDT")
+    clock.idx += 1
+    result_2 = web_app.run_tick()
+    assert not result_2["errors"]
+    assert result_2["total_drawdown_breaker_tripped"] is True
+
+
+def test_run_tick_total_drawdown_breaker_requires_confirm_cycles(monkeypatch):
+    """total_dd_confirm_cycles (config) doit être transmis jusqu'au
+    TotalDrawdownCircuitBreaker ET son compteur de dépassements consécutifs
+    doit être persisté/relu via l'état Supabase d'un tick à l'autre — sinon
+    il repartirait de zéro à chaque appel de run_tick() (qui reconstruit
+    tout l'état à chaque fois) et la confirmation sur plusieurs cycles
+    n'aurait aucun effet en pratique."""
+    cfg = _minimal_cfg(max_positions_per_symbol=1, max_total_drawdown_pct=0.20,
+                        total_dd_confirm_cycles=3, symbols=("BTC/USDT",))
+    monkeypatch.setattr(web_app, "_LAST_KNOWN_PRICE", {})
+    histories = {"BTC/USDT": _flat_ohlcv([100.0] * 11 + [40.0] * 5)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    fake_db.state = _seeded_breaker_state(
+        cash=100.0,
+        positions={"BTC/USDT": [{"qty": 7.0, "entry_price": 100.0, "stop_price": 1.0,
+                                  "target_price": 1_000_000.0, "active_substrategy": "trend"}]},
+        peak_equity=800.0,
+    )
+    monkeypatch.setattr(web_app, "load_config", lambda: cfg)
+    monkeypatch.setattr(web_app, "regime_strategy_from_config", lambda strategy_cfg: _AlwaysEnterStrategy())
+    monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
+    monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    # BTC à 40$ : équity = 100 + 7*40 = 380, soit -52.5% vs le plus haut
+    # (800) — bien au-delà du seuil (-20%) à chaque cycle, mais il en
+    # faut 3 consécutifs (confirm_cycles=3) avant le verrouillage.
+    for i in range(1, 3):
+        clock.idx += 1
+        result = web_app.run_tick()
+        assert result["total_drawdown_breaker_tripped"] is False, f"cycle {i} : pas encore confirmé"
+        assert fake_db.state["total_dd_consecutive_breaches"] == i
+
+    clock.idx += 1
+    result = web_app.run_tick()
+    assert result["total_drawdown_breaker_tripped"] is True, "3e cycle consécutif : doit verrouiller"
 
 
 def test_run_tick_migrates_old_single_position_state_format(monkeypatch):

@@ -229,6 +229,28 @@ applique simplement la valeur de `config.yaml` (0.25) — le plafond est
 actif dans tous les cas, seule la possibilité de l'ajuster à la volée
 sans redéployer dépend de cette migration.
 
+⚠️ **Migration pour `total_dd_consecutive_breaches`** (`*_state`, pas
+`*_config` — voir "Bug réel : faux coupe-circuits sur données KuCoin
+incomplètes" dans le README) — colonne qui compte, d'un cycle à l'autre,
+combien de fois CONSÉCUTIFS l'équity a dépassé le seuil de drawdown total
+avant de verrouiller (`total_dd_confirm_cycles` dans `config*.yaml`) :
+
+```sql
+alter table public.tradingbot_state
+  add column if not exists total_dd_consecutive_breaches integer not null default 0;
+alter table public.altbot_state
+  add column if not exists total_dd_consecutive_breaches integer not null default 0;
+alter table public.microbot_state
+  add column if not exists total_dd_consecutive_breaches integer not null default 0;
+```
+
+Sans cette colonne, `supabase_state.load_state()` s'en passe (`.get(...)`
+retombe sur 0) : le bot tourne normalement, mais `total_dd_confirm_cycles`
+n'a plus d'effet pratique (le compteur repart de zéro à chaque cycle au
+lieu de s'accumuler), donc le verrouillage redevient immédiat dès le
+premier dépassement — fais cette migration sur les 3 tables avant de
+déployer un `config*.yaml` qui fixe `total_dd_confirm_cycles` > 1.
+
 ⚠️ **Migration pour `tradingbot_journal`** (voir section "Le bot explique
 ses décisions" plus bas) — table entièrement nouvelle, à créer une fois
 si elle n'existe pas déjà :

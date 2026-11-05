@@ -75,6 +75,7 @@ def load_state(initial_balance: float) -> dict:
             "daily_tripped_today": False,
             "total_dd_peak_equity": None,
             "total_dd_tripped": False,
+            "total_dd_consecutive_breaches": 0,
         }
 
     row = rows[0]
@@ -91,6 +92,11 @@ def load_state(initial_balance: float) -> dict:
         "daily_tripped_today": bool(row.get("daily_tripped_today", False)),
         "total_dd_peak_equity": row.get("total_dd_peak_equity"),
         "total_dd_tripped": bool(row.get("total_dd_tripped", False)),
+        # nombre de cycles consécutifs en dépassement du seuil AVANT
+        # verrouillage définitif — voir TotalDrawdownCircuitBreaker.
+        # row.get(...) plutôt que row["..."] : colonne absente sur un
+        # déploiement pas encore migré ne doit jamais faire planter /tick.
+        "total_dd_consecutive_breaches": row.get("total_dd_consecutive_breaches") or 0,
     }
 
 
@@ -107,6 +113,7 @@ def save_state(state: dict) -> None:
         "daily_tripped_today": bool(state.get("daily_tripped_today", False)),
         "total_dd_peak_equity": state.get("total_dd_peak_equity"),
         "total_dd_tripped": bool(state.get("total_dd_tripped", False)),
+        "total_dd_consecutive_breaches": state.get("total_dd_consecutive_breaches") or 0,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     headers = _headers()

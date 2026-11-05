@@ -119,6 +119,7 @@ risk:
   max_position_pct_of_equity: 0.25
   max_daily_loss_pct: 0.03     # coupe-circuit journalier : arrête les nouvelles entrées après -3% sur une journée
   max_total_drawdown_pct: 0.20 # coupe-circuit TOTAL : arrête définitivement (jusqu'à révision manuelle) après -20% depuis le plus haut
+  total_dd_confirm_cycles: 3   # exige 3 cycles CONSÉCUTIFS au-delà du seuil avant de verrouiller (protège contre une équity aberrante sur un seul cycle, ex. prix manquant en 429)
   max_correlation_for_new_position: 0.75  # refuse une nouvelle position trop corrélée à une position déjà ouverte (null pour désactiver)
   correlation_lookback: 30     # nb de bougies utilisées pour estimer la corrélation glissante entre deux paires
 

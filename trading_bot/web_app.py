@@ -352,16 +352,37 @@ def _normalize_positions(positions: dict) -> dict:
     return normalized
 
 
-def _position_value(positions: dict, prices: dict) -> float:
+# Dernier prix connu par symbole, tous bots confondus dans ce process —
+# persiste entre deux appels à run_tick() tant que le worker Gunicorn ne
+# redémarre pas (WEB_CONCURRENCY=1, un seul worker). Sert UNIQUEMENT de
+# repli quand KuCoin répond 429 sur un symbole (voir _position_value) :
+# jamais utilisé pour une décision de trading, seulement pour éviter de
+# compter une position comme valant 0$ ce cycle-là.
+_LAST_KNOWN_PRICE: dict = {}
+
+
+def _position_value(positions: dict, prices: dict, last_known_prices: dict = None) -> float:
     """Valeur de marché de TOUTES les positions ouvertes, tous symboles et
     toutes positions par symbole confondus (une paire peut désormais en
-    porter plusieurs à la fois, voir max_positions_per_symbol)."""
-    return sum(
-        pos["qty"] * prices[symbol]
-        for symbol, open_positions in positions.items()
-        for pos in open_positions
-        if symbol in prices
-    )
+    porter plusieurs à la fois, voir max_positions_per_symbol).
+
+    Bug réel corrigé : un symbole absent de `prices` (récupération ratée
+    CE cycle, ex. 429 KuCoin) comptait ses positions comme valant 0$ au
+    lieu de les ignorer juste pour l'affichage — ça peut faire chuter
+    l'équity calculée de plusieurs dizaines de % en un cycle et déclencher
+    à tort le coupe-circuit de drawdown TOTAL (qui ne se réarme jamais
+    seul), alors que le drawdown réel est minime. `last_known_prices`
+    (repli no.1) puis `pos["entry_price"]` (repli no.2, toujours
+    disponible) remplacent maintenant ce 0$ silencieux."""
+    last_known_prices = last_known_prices or {}
+    total = 0.0
+    for symbol, open_positions in positions.items():
+        for pos in open_positions:
+            price = prices.get(symbol)
+            if price is None:
+                price = last_known_prices.get(symbol, pos["entry_price"])
+            total += pos["qty"] * price
+    return total
 
 
 def _apply_config_overrides(risk_cfg: dict, pf_cfg: dict, overrides: dict) -> set:
@@ -529,9 +550,13 @@ def run_tick() -> dict:
     daily_breaker._equity_at_day_start = state["daily_equity_at_day_start"]
     daily_breaker._tripped_today = state["daily_tripped_today"]
 
-    total_dd_breaker = TotalDrawdownCircuitBreaker(risk_cfg["max_total_drawdown_pct"])
+    total_dd_breaker = TotalDrawdownCircuitBreaker(
+        risk_cfg["max_total_drawdown_pct"],
+        confirm_cycles=risk_cfg.get("total_dd_confirm_cycles") or 1,
+    )
     total_dd_breaker._peak_equity = state["total_dd_peak_equity"]
     total_dd_breaker._tripped = state["total_dd_tripped"]
+    total_dd_breaker._consecutive_breaches = state.get("total_dd_consecutive_breaches") or 0
 
     dfs, rows, fetch_errors = {}, {}, []
     for s in symbols:
@@ -565,13 +590,23 @@ def run_tick() -> dict:
         return {"ok": True, "note": "pas assez de données ce cycle", "errors": fetch_errors}
 
     prices = {s: rows[s]["close"] for s in rows}
-    equity = cash + _position_value(positions, prices)
+    _LAST_KNOWN_PRICE.update(prices)
+    equity = cash + _position_value(positions, prices, _LAST_KNOWN_PRICE)
 
     now = datetime.now(timezone.utc)
     daily_was_tripped = daily_breaker._tripped_today
     total_was_tripped = total_dd_breaker._tripped
-    daily_breaker.update(now, equity)
-    total_dd_breaker.update(equity)
+    # Coupe-circuits jamais évalués sur un cycle aux données incomplètes
+    # (une paire au moins en échec de récupération, ex. 429 KuCoin) :
+    # `equity` ci-dessus utilise déjà un prix de repli (voir
+    # _position_value) donc reste correcte pour l'affichage/le sizing,
+    # mais ce n'est qu'une ESTIMATION — pas assez fiable pour verrouiller
+    # un coupe-circuit qui, pour le drawdown total, ne se réarme jamais
+    # seul. Bug réel : Bot #1 et #2 bloqués par un faux déclenchement
+    # pendant qu'une ou deux paires étaient en 429, drawdown réel minime.
+    if not fetch_errors:
+        daily_breaker.update(now, equity)
+        total_dd_breaker.update(equity)
 
     # un coupe-circuit qui se déclenche est journalisé UNE fois (à la
     # transition), pas à chaque tick tant qu'il reste déclenché
@@ -652,7 +687,7 @@ def run_tick() -> dict:
             proceeds = pos["qty"] * exit_price
             fee = proceeds * fee_pct
             cash += proceeds - fee
-            equity_now = cash + _position_value(positions, prices)
+            equity_now = cash + _position_value(positions, prices, _LAST_KNOWN_PRICE)
             db.log_trade(s, "sell", exit_price, pos["qty"], exit_reason, cash, equity_now)
             # `last_trade_ts` a été lu une seule fois en DB au début du tick
             # (voir plus haut) : sans cette ligne, une paire qui sort ICI
@@ -749,7 +784,7 @@ def run_tick() -> dict:
             # reconduit d'un tick à l'autre (processus stateless, voir plus haut).
             stop_p, target_p, stop_distance = strategies[s].compute_stop_and_target(fill_price, row)
             active = strategies[s].active_regime
-            equity_now = cash + _position_value(positions, prices)
+            equity_now = cash + _position_value(positions, prices, _LAST_KNOWN_PRICE)
             available_cash = cash / (1 + fee_pct)
             limits = min_order_limits.get(s, {})
             qty = position_size(equity_now, risk_cfg["risk_per_trade_pct"], fill_price, stop_distance, available_cash,
@@ -767,7 +802,7 @@ def run_tick() -> dict:
                 })
                 position_rank = len(positions[s])  # 1ère position sur cette paire, ou un rachat (2e, 3e...)
                 open_count += 1
-                equity_after = cash + _position_value(positions, prices)
+                equity_after = cash + _position_value(positions, prices, _LAST_KNOWN_PRICE)
                 db.log_trade(s, "buy", fill_price, qty, "signal", cash, equity_after)
                 trades_this_tick.append({"symbol": s, "side": "buy", "price": fill_price, "reason": "signal"})
                 regime_label = "tendance (EMA/MACD/volume)" if active == "trend" else "retournement (Bollinger/RSI)"
@@ -780,7 +815,7 @@ def run_tick() -> dict:
                 notional = qty * fill_price
                 pct_of_equity = notional / equity_now * 100 if equity_now else 0.0
                 risk_if_stopped_pct = qty * (fill_price - stop_p) / equity_now * 100 if equity_now else 0.0
-                exposure_pct = _position_value(positions, prices) / equity_after * 100 if equity_after else 0.0
+                exposure_pct = _position_value(positions, prices, _LAST_KNOWN_PRICE) / equity_after * 100 if equity_after else 0.0
                 # note de rachat uniquement quand elle a un sens (max_positions_per_symbol > 1,
                 # bot #3) — inutile de dire "1/1" pour les bots #1/#2, où ça ne peut jamais arriver.
                 rebuy_note = (f" (position {position_rank}/{max_positions_per_symbol} sur cette paire)"
@@ -799,7 +834,7 @@ def run_tick() -> dict:
                           "position_rank": position_rank},
                 )
 
-    total_equity = cash + _position_value(positions, prices)
+    total_equity = cash + _position_value(positions, prices, _LAST_KNOWN_PRICE)
 
     db.save_state({
         "cash": cash,
@@ -809,6 +844,7 @@ def run_tick() -> dict:
         "daily_tripped_today": daily_breaker._tripped_today,
         "total_dd_peak_equity": total_dd_breaker._peak_equity,
         "total_dd_tripped": total_dd_breaker._tripped,
+        "total_dd_consecutive_breaches": total_dd_breaker._consecutive_breaches,
     })
 
     return {

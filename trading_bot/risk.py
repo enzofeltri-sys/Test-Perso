@@ -124,8 +124,16 @@ class DailyLossCircuitBreaker:
 @dataclass
 class TotalDrawdownCircuitBreaker:
     max_total_drawdown_pct: float
+    # Nombre de cycles CONSÉCUTIFS en dépassement du seuil avant de
+    # verrouiller — 1 = comportement historique (verrouille au premier
+    # dépassement). Protège contre un déclenchement sur une seule
+    # équity aberrante (ex. bug de prix manquant côté web_app.py) plutôt
+    # que sur une vraie tendance de drawdown, pour un coupe-circuit qui
+    # ne se réarme jamais seul une fois verrouillé.
+    confirm_cycles: int = 1
     _peak_equity: float = None
     _tripped: bool = False
+    _consecutive_breaches: int = 0
 
     def update(self, equity: float):
         if self._peak_equity is None or equity > self._peak_equity:
@@ -137,7 +145,11 @@ class TotalDrawdownCircuitBreaker:
         if self._peak_equity:
             drawdown_pct = (equity - self._peak_equity) / self._peak_equity
             if drawdown_pct <= -abs(self.max_total_drawdown_pct):
-                self._tripped = True
+                self._consecutive_breaches += 1
+                if self._consecutive_breaches >= max(self.confirm_cycles, 1):
+                    self._tripped = True
+            else:
+                self._consecutive_breaches = 0
 
     def can_open_new_position(self) -> bool:
         return not self._tripped
