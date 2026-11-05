@@ -7,6 +7,7 @@ Aucune clé API n'est nécessaire pour ces fonctions : elles ne font que lire
 des données de marché publiques (bougies OHLCV), jamais passer d'ordres.
 """
 
+import random
 import time
 import pandas as pd
 import ccxt
@@ -67,9 +68,30 @@ def fetch_ohlcv_history(exchange, symbol: str, timeframe: str, since_days: int) 
     return df
 
 
-def fetch_latest_candles(exchange, symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
-    """Récupère les `limit` dernières bougies (utilisé en paper trading pour le polling)."""
-    candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+def fetch_latest_candles(exchange, symbol: str, timeframe: str, limit: int = 200,
+                          max_retries: int = 1, backoff_base_seconds: float = 0.4) -> pd.DataFrame:
+    """Récupère les `limit` dernières bougies (utilisé en paper trading pour
+    le polling).
+
+    Un seul bref retry (backoff + jitter) SPÉCIFIQUEMENT sur un 429
+    (RateLimitExceeded, transitoire par nature) — jamais sur une autre
+    erreur d'exchange, qui doit remonter immédiatement comme avant (voir
+    run_tick : une paire en échec est journalisée et le cycle continue
+    avec les autres). Volontairement court (max ~1,2s de délai) : avec
+    jusqu'à 24 paires par cycle (bot #3), un retry trop généreux sur
+    chacune risquerait de dépasser le timeout du cycle plutôt que
+    d'aider — ce n'est qu'un filet de sécurité, pas une garantie."""
+    attempt = 0
+    while True:
+        try:
+            candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            break
+        except ccxt.RateLimitExceeded:
+            attempt += 1
+            if attempt > max_retries:
+                raise
+            delay = backoff_base_seconds * (2 ** (attempt - 1)) * (0.5 + random.random())
+            time.sleep(delay)
     df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df = df.set_index("timestamp").sort_index()

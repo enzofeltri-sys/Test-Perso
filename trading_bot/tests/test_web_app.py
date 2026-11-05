@@ -218,6 +218,12 @@ def _patch_common(monkeypatch, cfg, histories, clock, fake_db, strategy_cls=_Alw
     monkeypatch.setattr(web_app.data, "get_exchange", lambda exchange_id: object())
     monkeypatch.setattr(web_app.data, "fetch_latest_candles", _fake_fetch_latest_candles(histories, clock))
     monkeypatch.setattr(web_app, "db", fake_db)
+    # isolation entre tests : _EXCHANGE_CACHE/_LAST_KNOWN_PRICE sont des
+    # caches module-level pensés pour persister entre deux VRAIS ticks
+    # (voir leurs docstrings) — sans ce reset, un test réutiliserait l'objet
+    # (ou le prix) laissé par le test précédent au lieu du sien.
+    monkeypatch.setattr(web_app, "_EXCHANGE_CACHE", {})
+    monkeypatch.setattr(web_app, "_LAST_KNOWN_PRICE", {})
 
 
 def test_normalize_positions_migrates_old_single_position_format():
@@ -283,6 +289,7 @@ def test_run_tick_never_evaluates_circuit_breakers_on_incomplete_price_data(monk
     cfg = _minimal_cfg(max_positions_per_symbol=1, max_concurrent_positions=100,
                         max_total_drawdown_pct=0.20, symbols=("BTC/USDT", "ETH/USDT"))
     monkeypatch.setattr(web_app, "_LAST_KNOWN_PRICE", {})  # isolation entre tests
+    monkeypatch.setattr(web_app, "_EXCHANGE_CACHE", {})
     # BTC s'effondre (100 -> 40) à l'indice 11 et reste effondré ; ETH
     # reste plat à 50 — seul BTC bouge, pour isoler l'effet du "trou" côté ETH.
     histories = {
@@ -346,6 +353,7 @@ def test_run_tick_total_drawdown_breaker_requires_confirm_cycles(monkeypatch):
     cfg = _minimal_cfg(max_positions_per_symbol=1, max_total_drawdown_pct=0.20,
                         total_dd_confirm_cycles=3, symbols=("BTC/USDT",))
     monkeypatch.setattr(web_app, "_LAST_KNOWN_PRICE", {})
+    monkeypatch.setattr(web_app, "_EXCHANGE_CACHE", {})
     histories = {"BTC/USDT": _flat_ohlcv([100.0] * 11 + [40.0] * 5)}
     clock = Clock(idx=10)
     fake_db = FakeDB()
@@ -502,6 +510,33 @@ def test_run_tick_reentry_cooldown_blocks_rebuy_right_after_an_exit_in_the_same_
     assert result["open_positions"] == 0, (
         "rachat immédiat après une sortie dans le même tick : le cooldown "
         "a été contourné car last_trade_ts n'a pas été mis à jour après la vente"
+    )
+
+
+def test_run_tick_reuses_the_same_exchange_instance_across_ticks(monkeypatch):
+    """Contribue aux 429 KuCoin chroniques : exchange.markets repartait
+    vide à chaque tick (une nouvelle instance ccxt était créée à chaque
+    appel), donc get_min_order_limits rappelait load_markets() — un appel
+    API entier en plus des N fetch_ohlcv par paire, à CHAQUE cycle de 5
+    minutes, pour des limites d'ordre qui changent rarement."""
+    cfg = _minimal_cfg()
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    get_exchange_calls = []
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+    monkeypatch.setattr(
+        web_app.data, "get_exchange",
+        lambda exchange_id: get_exchange_calls.append(exchange_id) or object(),
+    )
+
+    clock.idx += 1
+    web_app.run_tick()
+    clock.idx += 1
+    web_app.run_tick()
+
+    assert get_exchange_calls == ["kucoin"], (
+        "data.get_exchange() ne doit être appelé qu'UNE fois, pas à chaque tick"
     )
 
 

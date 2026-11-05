@@ -360,6 +360,20 @@ def _normalize_positions(positions: dict) -> dict:
 # compter une position comme valant 0$ ce cycle-là.
 _LAST_KNOWN_PRICE: dict = {}
 
+# Instance ccxt réutilisée entre deux appels à run_tick() (même worker
+# Gunicorn) au lieu d'en recréer une à chaque cycle. Sans ce cache,
+# exchange.markets repartait vide à chaque tick, et get_min_order_limits
+# rappelait load_markets() — un appel API ENTIER en plus des N fetch_ohlcv
+# par paire, toutes les 5 minutes, qui contribuait aux 429 KuCoin
+# chroniques pour rien (les limites d'ordre changent rarement).
+_EXCHANGE_CACHE: dict = {}
+
+
+def _get_cached_exchange(exchange_id: str):
+    if exchange_id not in _EXCHANGE_CACHE:
+        _EXCHANGE_CACHE[exchange_id] = data.get_exchange(exchange_id)
+    return _EXCHANGE_CACHE[exchange_id]
+
 
 def _position_value(positions: dict, prices: dict, last_known_prices: dict = None) -> float:
     """Valeur de marché de TOUTES les positions ouvertes, tous symboles et
@@ -521,7 +535,7 @@ def run_tick() -> dict:
     strategy_cfg = _apply_strategy_overrides(cfg["strategy"], overrides.get("strategy_overrides"))
 
     symbols = pf_cfg["symbols"]
-    exchange = data.get_exchange(ex_cfg["id"])
+    exchange = _get_cached_exchange(ex_cfg["id"])
     # quantité/valeur minimum par ordre sur cet exchange (voir
     # data.get_min_order_limits) — best-effort, {} si l'appel échoue
     # (comportement identique à avant ce contrôle, pas de plancher).
