@@ -31,6 +31,7 @@ class FakeDB:
         self.trades = []
         self.errors = []
         self.journal = []
+        self.equity_snapshots = []
         self.overrides = overrides or {}
         # lignes renvoyées par get_recent_errors() — sert à simuler des
         # erreurs déjà horodatées en base (déduplication des alertes)
@@ -59,6 +60,13 @@ class FakeDB:
             "symbol": symbol, "side": side, "price": price, "qty": qty,
             "reason": reason, "cash_after": cash_after, "equity_after": equity_after,
             "ts": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def log_equity_snapshot(self, cash, positions_cost, equity_at_cost, n_positions,
+                             peak_equity, dd_tripped):
+        self.equity_snapshots.append({
+            "cash": cash, "positions_cost": positions_cost, "equity_at_cost": equity_at_cost,
+            "n_positions": n_positions, "peak_equity": peak_equity, "dd_tripped": dd_tripped,
         })
 
     def get_last_trade_ts_by_symbol(self, limit=500):
@@ -409,6 +417,48 @@ def test_run_tick_migrates_old_single_position_state_format(monkeypatch):
     migrated = fake_db.state["positions"]["BTC/USDT"]
     assert isinstance(migrated, list)
     assert any(p["entry_price"] == 90.0 for p in migrated), "la position pré-existante a disparu à la migration"
+
+
+def test_run_tick_logs_a_daily_equity_snapshot(monkeypatch):
+    """bot_equity_history (table partagée, voir supabase_state.log_equity_snapshot) :
+    un instantané au COÛT d'entrée des positions, pas leur valeur de
+    marché actuelle (pas d'appel exchange supplémentaire rien que pour
+    ce log) — écrit à chaque tick, best-effort."""
+    cfg = _minimal_cfg(max_positions_per_symbol=1)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+
+    clock.idx += 1
+    result = web_app.run_tick()
+
+    assert result["ok"] is True
+    assert len(fake_db.equity_snapshots) == 1
+    snap = fake_db.equity_snapshots[0]
+    assert snap["n_positions"] == 1
+    assert snap["equity_at_cost"] == pytest.approx(snap["cash"] + snap["positions_cost"])
+
+
+def test_run_tick_survives_a_broken_equity_snapshot_write(monkeypatch):
+    """La table bot_equity_history est optionnelle (RLS/policy pas encore
+    posée, ou table absente sur un déploiement pas encore migré) — un
+    échec ne doit JAMAIS faire planter /tick, best-effort comme le reste
+    des logs annexes (log_error, log_journal_entry)."""
+    cfg = _minimal_cfg(max_positions_per_symbol=1)
+    histories = {"BTC/USDT": make_ohlcv(seed=0, n=50, start=100.0)}
+    clock = Clock(idx=10)
+    fake_db = FakeDB()
+
+    def _boom(**kwargs):
+        raise RuntimeError("RLS: permission denied")
+    fake_db.log_equity_snapshot = _boom
+    _patch_common(monkeypatch, cfg, histories, clock, fake_db)
+
+    clock.idx += 1
+    result = web_app.run_tick()
+
+    assert result["ok"] is True
 
 
 def test_run_tick_caps_rebuys_at_max_positions_per_symbol(monkeypatch):

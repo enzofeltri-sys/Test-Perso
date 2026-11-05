@@ -122,6 +122,34 @@ def save_state(state: dict) -> None:
     resp.raise_for_status()
 
 
+def log_equity_snapshot(cash: float, positions_cost: float, equity_at_cost: float,
+                         n_positions: int, peak_equity: float, dd_tripped: bool) -> None:
+    """Instantané QUOTIDIEN (une ligne par (bot, date) — voir la contrainte
+    UNIQUE (bot, snap_date) de bot_equity_history, table PARTAGÉE entre
+    tous les bots, pas préfixée par TABLE_PREFIX comme le reste de ce
+    module) de l'équity au COÛT d'entrée des positions ouvertes (pas leur
+    valeur de marché actuelle — voir web_app._position_value, ça
+    demanderait un appel exchange en plus rien que pour ce log). Plusieurs
+    ticks le même jour écrasent la même ligne (upsert sur bot+date), donc
+    le dernier tick de la journée gagne — suffisant pour une tendance
+    jour par jour, pas pensé comme un historique intra-journalier."""
+    url = f"{_base_url()}/bot_equity_history?on_conflict=bot,snap_date"
+    payload = {
+        "bot": _prefix(),
+        "snap_date": datetime.now(timezone.utc).date().isoformat(),
+        "cash": cash,
+        "positions_cost": positions_cost,
+        "equity_at_cost": equity_at_cost,
+        "n_positions": n_positions,
+        "peak_equity": peak_equity,
+        "dd_tripped": bool(dd_tripped),
+    }
+    headers = _headers()
+    headers["Prefer"] = "resolution=merge-duplicates"
+    resp = requests.post(url, headers=headers, json=payload, timeout=15)
+    resp.raise_for_status()
+
+
 def log_trade(symbol: str, side: str, price: float, qty: float, reason: str,
               cash_after: float, equity_after: float) -> None:
     url = f"{_base_url()}/{_table('trades')}"

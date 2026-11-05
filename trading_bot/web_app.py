@@ -861,6 +861,23 @@ def run_tick() -> dict:
         "total_dd_consecutive_breaches": total_dd_breaker._consecutive_breaches,
     })
 
+    # Instantané quotidien pour bot_equity_history (table partagée entre
+    # les 3 bots, voir supabase_state.log_equity_snapshot) — best-effort,
+    # table optionnelle : ne doit jamais faire échouer /tick si elle
+    # n'existe pas encore ou si sa policy RLS n'est pas posée.
+    try:
+        positions_cost = sum(
+            pos.get("qty", 0) * pos.get("entry_price", 0)
+            for open_positions in positions.values() for pos in open_positions
+        )
+        db.log_equity_snapshot(
+            cash=cash, positions_cost=positions_cost,
+            equity_at_cost=cash + positions_cost, n_positions=open_count,
+            peak_equity=total_dd_breaker._peak_equity, dd_tripped=total_dd_breaker._tripped,
+        )
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "timestamp": now.isoformat(),
